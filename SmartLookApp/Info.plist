@@ -13,12 +13,12 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-<string>0.1</string>
+<string>12.4</string>
 	<key>CFBundleVersion</key>
 <string>1</string>
 	<key>CFBundleIconFiles</key>
 	<array>
-		<string>SmartLookAppLogo</string>
+		<string>SmartLookAppLogo-v12.4</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>SmartLookApp uses the camera to stage training photos locally on this iPad.</string>

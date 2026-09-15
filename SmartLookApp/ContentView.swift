@@ -25,7 +25,7 @@ struct MVDSession {
 
 private struct MVDLogo: View {
     private var logoImage: UIImage? {
-        guard let url = Bundle.main.url(forResource: "SmartLookAppLogo", withExtension: "png") else { return nil }
+        guard let url = Bundle.main.url(forResource: "SmartLookAppLogo-v12.4", withExtension: "png") else { return nil }
         return UIImage(contentsOfFile: url.path)
     }
 
