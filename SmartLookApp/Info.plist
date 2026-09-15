@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>SmartLookApp</string>
+	<key>CFBundleExecutable</key>
+	<string>SmartLookApp</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.aeronexares.smartlookapp.mvd</string>
+	<key>CFBundleName</key>
+	<string>SmartLookApp</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+<string>0.1</string>
+	<key>CFBundleVersion</key>
+<string>1</string>
+	<key>CFBundleIconFiles</key>
+	<array>
+		<string>SmartLookAppLogo</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>SmartLookApp uses the camera to stage training photos locally on this iPad.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>SmartLookApp uses selected photos locally for visual search and OCR.</string>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict/>
+</dict>
+</plist>
