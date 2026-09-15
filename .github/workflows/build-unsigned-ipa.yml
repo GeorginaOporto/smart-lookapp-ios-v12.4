@@ -1,0 +1,66 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "SmartLookApp/**"
+      - "SmartLookApp.xcodeproj/**"
+      - ".github/workflows/build-unsigned-ipa.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Check out sanitized source
+        uses: actions/checkout@v4
+
+      - name: Install ONNX Runtime dependency
+        run: |
+          set -euo pipefail
+          pod install --repo-update
+          unzip -o SmartLookApp/Models/mobile_sam_encoder.onnx.zip -d SmartLookApp/Models
+
+      - name: Build unsigned device app
+        run: |
+          set -euo pipefail
+          rm -rf build
+          mkdir -p build
+          xcodebuild \
+            -workspace SmartLookApp.xcworkspace \
+            -scheme SmartLookApp \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build/DerivedData \
+            CONFIGURATION_BUILD_DIR="$PWD/build/App" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            clean build 2>&1 | tee build/xcodebuild.log
+
+      - name: Ensure standalone logo resource
+        run: |
+          set -euo pipefail
+          cp SmartLookApp/SmartLookAppLogo.png build/App/SmartLookApp.app/SmartLookAppLogo.png
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          mkdir -p build/Payload
+          cp -R build/App/SmartLookApp.app build/Payload/
+          (cd build && /usr/bin/zip -qry SmartLookApp-unsigned.ipa Payload)
+
+      - name: Publish IPA release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="ios-build-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" build/SmartLookApp-unsigned.ipa \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "SmartLookApp iOS build ${GITHUB_RUN_NUMBER}" \
+            --notes "Unsigned IPA generated from the published main branch." \
+            --prerelease

@@ -1,0 +1,47 @@
+name: Build SmartLookApp iOS v12.4 unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "SmartLookApp/**"
+      - "SmartLookApp.xcodeproj/**"
+      - "Podfile"
+      - ".github/workflows/build-unsigned-ipa-v12.4.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          pod install --repo-update
+          unzip -o SmartLookApp/Models/mobile_sam_encoder.onnx.zip -d SmartLookApp/Models
+          cp SmartLookApp/SmartLookAppLogo.png /tmp/SmartLookAppLogo.jpg
+          sips -s format png /tmp/SmartLookAppLogo.jpg --out SmartLookApp/SmartLookAppLogo.png
+      - name: Build unsigned device app
+        run: |
+          set -euo pipefail
+          rm -rf build
+          mkdir -p build
+          xcodebuild -workspace SmartLookApp.xcworkspace -scheme SmartLookApp -sdk iphoneos -configuration Release -derivedDataPath build/DerivedData CONFIGURATION_BUILD_DIR="$PWD/build/App" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM="" clean build 2>&1 | tee build/xcodebuild.log
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          mkdir -p build/Payload
+          cp -R build/App/SmartLookApp.app build/Payload/
+          (cd build && /usr/bin/zip -qry SmartLookApp-v12.4-unsigned.ipa Payload)
+      - name: Publish IPA release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-v12.4-build-${{ github.run_number }}
+          name: SmartLookApp iOS v12.4 build ${{ github.run_number }}
+          body: Unsigned IPA generated from the SmartLookApp iOS v12.4 training architecture.
+          files: build/SmartLookApp-v12.4-unsigned.ipa
+          draft: false
+          prerelease: true
