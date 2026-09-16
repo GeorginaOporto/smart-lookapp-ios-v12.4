@@ -312,16 +312,18 @@ final class MVDLocalStore: ObservableObject {
         let wanted = [normalized(customer), normalized(manufacturer), normalized(model)]
         let fileManager = FileManager.default
         for root in privateTrainingRoots() {
-            let components = root.pathComponents.map(normalized)
-            let rootMatches = wanted.allSatisfy { value in value.isEmpty || components.contains(value) }
-            if rootMatches && containsTrainingFile(root, fileManager: fileManager) { return true }
             guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey]) else { continue }
             for case let url as URL in enumerator {
                 guard url.pathExtension.caseInsensitiveCompare("json") == .orderedSame else { continue }
-                let parts = url.pathComponents.map(normalized)
-                let hasFleetModel = !wanted[2].isEmpty && parts.contains(wanted[2])
-                let hasSharedCMM = parts.contains("CMM")
-                if parts.contains(wanted[0]) && parts.contains(wanted[1]) && (hasFleetModel || hasSharedCMM) {
+                let parts = url.deletingLastPathComponent().pathComponents.map(normalized)
+                guard wanted[0].isEmpty || parts.contains(wanted[0]),
+                      wanted[1].isEmpty || parts.contains(wanted[1]) else { continue }
+                // A shared CMM is a separate library. It must not make an
+                // aircraft model appear installed, otherwise the download
+                // sheet can skip a missing B777/B787/A320 library.
+                if wanted[2].caseInsensitiveCompare("CMM") == .orderedSame {
+                    if parts.contains("CMM") { return true }
+                } else if !wanted[2].isEmpty && parts.contains(wanted[2]) {
                     return true
                 }
             }
@@ -354,14 +356,6 @@ final class MVDLocalStore: ObservableObject {
             }
             DispatchQueue.main.async { completion(options) }
         }.resume()
-    }
-
-    private func containsTrainingFile(_ root: URL, fileManager: FileManager) -> Bool {
-        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey]) else { return false }
-        return enumerator.contains { item in
-            guard let url = item as? URL else { return false }
-            return url.pathExtension.caseInsensitiveCompare("json") == .orderedSame
-        }
     }
 
     private func beginPrivateTrainingLoad(importArchives: Bool) {
@@ -1119,9 +1113,9 @@ final class MVDLocalStore: ObservableObject {
     }
 
     /// Downloads the published library for the selected fleet and installs it
-    /// in the app's Documents/TrainingData root, which is also visible through
-    /// Apple Devices. The server archive already contains the AA/Boeing/model
-    /// hierarchy, so extraction preserves the route used by Search and Audit.
+    /// in Documents/TrainingData, which is also visible through Apple Devices.
+    /// The archive is normalized into the requested route so legacy ZIPs cannot
+    /// put a shared CMM inside an aircraft model folder.
     func downloadTrainingLibrary(customer: String, manufacturer: String, model: String,
                                  completion: @escaping (String) -> Void) {
         guard !isPreparing else { completion("TRAINING INDEX BUSY"); return }
@@ -1151,7 +1145,13 @@ final class MVDLocalStore: ObservableObject {
             let destination = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("TrainingData", isDirectory: true)
             do {
-                try MVDTrainingArchiveInstaller.install(zipURL: downloadedURL, into: destination)
+                try MVDTrainingArchiveInstaller.install(
+                    zipURL: downloadedURL,
+                    into: destination,
+                    customer: customer,
+                    manufacturer: manufacturer,
+                    model: model
+                )
                 DispatchQueue.main.async {
                     self.hasPreparedPrivateTraining = false
                     self.loadPrivateTrainingIndex()
@@ -1171,6 +1171,24 @@ final class MVDLocalStore: ObservableObject {
                                    completion: @escaping (String) -> Void) {
         var unique: [String: MVDLibraryOption] = [:]
         selections.forEach { unique[$0.key] = $0 }
+        // Keep the shared manufacturer CMM coupled to every aircraft
+        // selection. The UI already marks this row as required, but enforcing
+        // it here also protects other callers from downloading a model alone.
+        let manufacturers = Set(selections.compactMap { option -> String? in
+            guard let parts = option.parts, !option.isSharedCMM else { return nil }
+            return parts.manufacturer
+        })
+        for manufacturer in manufacturers {
+            let cmmKey = "(manufacturer)/CMM"
+            if unique[cmmKey] == nil {
+                unique[cmmKey] = MVDLibraryOption(
+                    key: cmmKey,
+                    version: nil,
+                    lastUpdated: nil,
+                    sizeMB: 0
+                )
+            }
+        }
         let ordered = unique.values.sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }
         guard !ordered.isEmpty else {
             completion("NO LIBRARIES SELECTED")
@@ -1240,22 +1258,81 @@ final class MVDLocalStore: ObservableObject {
 }
 
 private enum MVDTrainingArchiveInstaller {
-    static func install(zipURL: URL, into destinationRoot: URL) throws {
+    /// Installs one server library into its canonical route. ZIP entries are
+    /// accepted in customer-first, model-first, or legacy nested layouts,
+    /// but the resulting tree is always:
+    /// TrainingData/<customer>/<manufacturer>/<model> and
+    /// TrainingData/<customer>/<manufacturer>/CMM.
+    static func install(zipURL: URL, into destinationRoot: URL,
+                        customer: String, manufacturer: String, model: String) throws {
         guard let archive = Archive(url: zipURL, accessMode: .read) else {
             throw InstallerError.invalidArchive
         }
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+        let normalizedCustomer = normalizedComponent(customer)
+        let normalizedManufacturer = normalizedComponent(manufacturer)
+        let normalizedModel = normalizedComponent(model)
+        let isCMM = normalizedModel.caseInsensitiveCompare("CMM") == .orderedSame
+        let modelRoot = destinationRoot
+            .appendingPathComponent(normalizedCustomer, isDirectory: true)
+            .appendingPathComponent(normalizedManufacturer, isDirectory: true)
+            .appendingPathComponent(normalizedModel, isDirectory: true)
+        let sharedCMMRoot = destinationRoot
+            .appendingPathComponent(normalizedCustomer, isDirectory: true)
+            .appendingPathComponent(normalizedManufacturer, isDirectory: true)
+            .appendingPathComponent("CMM", isDirectory: true)
         let rootPath = destinationRoot.standardizedFileURL.path
         for entry in archive where entry.type == .file {
-            let relative = entry.path.replacingOccurrences(of: "\\", with: "/")
-            guard !relative.hasPrefix("/"), !relative.contains("../") else { continue }
-            let output = destinationRoot.appendingPathComponent(relative)
+            guard let components = safeComponents(entry.path) else { continue }
+            let cmmIndex = components.firstIndex { $0.caseInsensitiveCompare("CMM") == .orderedSame }
+            let relativeComponents: [String]
+            let targetRoot: URL
+
+            if let cmmIndex {
+                // A CMM found anywhere in the archive belongs to the shared
+                // manufacturer library, even when an old ZIP put it under a
+                // model folder (for example B777-300/CMM/...).
+                targetRoot = sharedCMMRoot
+                relativeComponents = Array(components.dropFirst(cmmIndex + 1))
+            } else {
+                targetRoot = modelRoot
+                let modelIndex = components.firstIndex { $0.caseInsensitiveCompare(normalizedModel) == .orderedSame }
+                if let modelIndex {
+                    relativeComponents = Array(components.dropFirst(modelIndex + 1))
+                } else {
+                    // Bare model archives contain entries such as
+                    // "ATA32/file.json". Remove only known route prefixes.
+                    let prefixes = Set([normalizedCustomer, normalizedManufacturer, "TrainingData"].map { $0.lowercased() })
+                    relativeComponents = components.filter {
+                        !prefixes.contains(normalizedComponent($0).lowercased())
+                    }
+                }
+            }
+
+            guard !relativeComponents.isEmpty else { continue }
+            let relative = relativeComponents.joined(separator: "/")
+            let output = targetRoot.appendingPathComponent(relative)
             let outputPath = output.standardizedFileURL.path
             guard outputPath == rootPath || outputPath.hasPrefix(rootPath + "/") else { continue }
             try fileManager.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
             _ = try archive.extract(entry, to: output)
         }
+    }
+
+    private static func safeComponents(_ rawPath: String) -> [String]? {
+        let normalized = rawPath.replacingOccurrences(of: "\\", with: "/")
+        guard !normalized.hasPrefix("/") else { return nil }
+        let components = normalized.split(separator: "/").map(String.init)
+        guard !components.isEmpty,
+              !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else { return nil }
+        return components
+    }
+
+    private static func normalizedComponent(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\", with: "")
+            .replacingOccurrences(of: "/", with: "")
     }
 
     private enum InstallerError: LocalizedError {
@@ -1280,15 +1357,36 @@ private enum MVDPrivateArchiveImporter {
         guard let archive = Archive(url: archiveURL, accessMode: .read) else { return }
         let regularEntries = archive.filter { $0.type == .file }
         guard let firstPath = regularEntries.first?.path else { return }
-        let firstComponent = firstPath.split(separator: "/").first.map(String.init)?.uppercased()
+        let firstComponents = firstPath.replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/").map(String.init)
+        guard let cmmIndex = firstComponents.firstIndex(where: {
+            $0.caseInsensitiveCompare("CMM") == .orderedSame
+        }) else { return }
+        let manufacturers = Set(["BOEING", "AIRBUS", "EMBRAER", "BOMBARDIER", "DEHAVILLAND"])
+        let manufacturerIndex = firstComponents.firstIndex {
+            manufacturers.contains($0.uppercased().replacingOccurrences(of: "-", with: ""))
+        }
+        let manufacturer = manufacturerIndex.map { firstComponents[$0] } ?? "Boeing"
+        let customer = manufacturerIndex.flatMap { index in
+            index > 0 ? firstComponents[index - 1] : nil
+        } ?? "AA"
         let trainingRoot = documents.appendingPathComponent("TrainingData", isDirectory: true)
-        let destinationRoot = trainingRoot.appendingPathComponent("AA/Boeing", isDirectory: true)
-            .appendingPathComponent(firstComponent == "CMM" ? "" : "CMM", isDirectory: true)
+        let destinationRoot = trainingRoot
+            .appendingPathComponent(customer, isDirectory: true)
+            .appendingPathComponent(manufacturer, isDirectory: true)
+            .appendingPathComponent("CMM", isDirectory: true)
         try? FileManager.default.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
 
         for entry in regularEntries {
-            let relative = entry.path.replacingOccurrences(of: "\\", with: "/")
-            guard !relative.hasPrefix("/"), !relative.contains("../") else { continue }
+            let components = entry.path.replacingOccurrences(of: "\\", with: "/")
+                .split(separator: "/").map(String.init)
+            guard !components.isEmpty,
+                  let entryCMMIndex = components.firstIndex(where: {
+                      $0.caseInsensitiveCompare("CMM") == .orderedSame
+                  }) else { continue }
+            let relativeComponents = Array(components.dropFirst(entryCMMIndex + 1))
+            guard !relativeComponents.isEmpty else { continue }
+            let relative = relativeComponents.joined(separator: "/")
             let output = destinationRoot.appendingPathComponent(relative)
             let resolvedDestination = output.standardizedFileURL.path
             guard resolvedDestination.hasPrefix(destinationRoot.standardizedFileURL.path) else { continue }

@@ -25,18 +25,21 @@ struct MVDSession {
 
 private struct MVDLogo: View {
     private var logoImage: UIImage? {
-        // Prefer the bundle image loader so the logo works whether Xcode
-        // stores it as a normal resource or optimizes it during packaging.
-        if let image = UIImage(named: "SmartLookAppLogo-v12.4") {
-            return image
-        }
+        // The catalog asset is the canonical in-app logo. Keep the raw bundle
+        // fallbacks for older installations and development builds.
         if let image = UIImage(named: "SmartLookAppLogo") {
             return image
         }
-        guard let url = Bundle.main.url(forResource: "SmartLookAppLogo-v12.4", withExtension: "png") else {
-            return nil
+        if let image = UIImage(named: "SmartLookAppLogo-v12.4") {
+            return image
         }
-        return UIImage(contentsOfFile: url.path)
+        for resourceName in ["SmartLookAppLogo-v12.4", "SmartLookAppLogo"] {
+            if let url = Bundle.main.url(forResource: resourceName, withExtension: "png"),
+               let image = UIImage(contentsOfFile: url.path) {
+                return image
+            }
+        }
+        return nil
     }
 
     var body: some View {
@@ -266,6 +269,8 @@ struct AppHeader: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            MVDLogo()
+                .frame(width: 46, height: 46)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text("SMART LOOKAPP").font(.system(size: 14, weight: .black))
@@ -833,7 +838,7 @@ private struct LibraryDownloadSheet: View {
         NavigationStack {
             List {
                 Section {
-                    Text("\(requiredModel) is required for the selected nose. Shared CMM is selected automatically because it is stored outside the aircraft model folders and is reused by multiple fleets.")
+                    Text("You must download the library fleet and interior CMM for the selected NOSE")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -876,7 +881,7 @@ private struct LibraryDownloadSheet: View {
                                                 .font(.caption.weight(.bold))
                                                 .foregroundStyle(.green)
                                         } else if required {
-                                            Text("REQUIRED — INCLUDES SHARED CMM")
+                                            Text("REQUIRED")
                                                 .font(.caption.weight(.bold))
                                                 .foregroundStyle(.orange)
                                         } else if option.sizeMB > 0 {
@@ -2067,6 +2072,11 @@ private struct VisionExtractionView: View {
         guard !isProcessing else { return }
         isProcessing = true
         extractionMessage = "Segmenting piece…"
+        print(
+            "EXTRACTION_TAP normalized=(\(String(format: "%.4f", point.x)),\(String(format: "%.4f", point.y))) " +
+            "zoom=\(String(format: "%.2f", zoomScale)) " +
+            "pan=(\(String(format: "%.1f", panOffset.width)),\(String(format: "%.1f", panOffset.height)))"
+        )
         // Match Android: run MobileSAM on the complete normalized image and
         // convert the normalized tap inside the model, preserving context
         // around the selected part. A local crop can merge the tapped piece

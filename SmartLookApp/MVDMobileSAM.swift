@@ -68,31 +68,24 @@ final class MVDMobileSAM {
 
             let modelX = min(max(normalizedPoint.x * CGFloat(sourceCGImage.width) * prep.scale + CGFloat(prep.offsetX), 0), CGFloat(inputSize - 1))
             let modelY = min(max(normalizedPoint.y * CGFloat(sourceCGImage.height) * prep.scale + CGFloat(prep.offsetY), 0), CGFloat(inputSize - 1))
+            print(
+                "EXTRACTION_MODEL source=(\(sourceCGImage.width)x\(sourceCGImage.height)) " +
+                "tap=(\(String(format: "%.1f", normalizedPoint.x * CGFloat(sourceCGImage.width))),\(String(format: "%.1f", normalizedPoint.y * CGFloat(sourceCGImage.height)))) " +
+                "model=(\(String(format: "%.1f", modelX)),\(String(format: "%.1f", modelY)))"
+            )
 
 
-            // Match Android's positive/negative prompt flow.
-            let radius: CGFloat = 0.04
-            let ring: [CGPoint] = [
-                CGPoint(x: normalizedPoint.x - radius, y: normalizedPoint.y - radius),
-                CGPoint(x: normalizedPoint.x + radius, y: normalizedPoint.y - radius),
-                CGPoint(x: normalizedPoint.x - radius, y: normalizedPoint.y + radius),
-                CGPoint(x: normalizedPoint.x + radius, y: normalizedPoint.y + radius)
-            ]
-            var negativePoints: [CGPoint] = []
-            for candidate in ring {
-                if candidate.x >= 0 && candidate.x <= 1 && candidate.y >= 0 && candidate.y <= 1 { negativePoints.append(candidate) }
-            }
-            let promptPoints: [CGPoint] = [normalizedPoint] + negativePoints
-            var modelPoints: [Float] = []
-            modelPoints.reserveCapacity(promptPoints.count * 2)
-            for prompt in promptPoints {
-                let px = prompt.x * CGFloat(sourceCGImage.width) * prep.scale + CGFloat(prep.offsetX)
-                let py = prompt.y * CGFloat(sourceCGImage.height) * prep.scale + CGFloat(prep.offsetY)
-                modelPoints.append(Float(min(max(px, 0), CGFloat(inputSize - 1))))
-                modelPoints.append(Float(min(max(py, 0), CGFloat(inputSize - 1))))
-            }
-            let pointCoords = try makeTensor(values: modelPoints, shape: [1, promptPoints.count, 2])
-            let pointLabels = try makeTensor(values: [Float(1)] + Array(repeating: Float(-1), count: negativePoints.count), shape: [1, promptPoints.count])
+            // Keep the iOS prompt identical to Android: one positive point.
+            // A synthetic negative ring can land on the same component or on
+            // a neighboring part and force MobileSAM to reject the real tap.
+            let pointCoords = try makeTensor(
+                values: [Float(modelX), Float(modelY)],
+                shape: [1, 1, 2]
+            )
+            let pointLabels = try makeTensor(
+                values: [1],
+                shape: [1, 1]
+            )
             let maskInput = try makeTensor(
                 values: Array(repeating: 0, count: 256 * 256),
                 shape: [1, 1, 256, 256]
@@ -317,8 +310,14 @@ final class MVDMobileSAM {
 
         let (left, top) = maskToSource(minX, minY)
         let (right, bottom) = maskToSource(maxX, maxY)
-        let outputWidth = max(1, right - left)
-        let outputHeight = max(1, bottom - top)
+        print(
+            "EXTRACTION_MASK mask=(\(maskWidth)x\(maskHeight)) " +
+            "sourceBounds=(\(left),\(top))-(\(right),\(bottom))"
+        )
+        // The mask bounds are inclusive. Keeping the final pixel avoids
+        // trimming the selected part at its right/bottom edge.
+        let outputWidth = min(width - left, max(1, right - left + 1))
+        let outputHeight = min(height - top, max(1, bottom - top + 1))
         var output = Array(repeating: UInt8(0), count: outputWidth * outputHeight * 4)
         for y in 0..<outputHeight {
             for x in 0..<outputWidth {
@@ -395,3 +394,4 @@ final class MVDMobileSAM {
         return Array(UnsafeBufferPointer(start: pointer, count: width * height * 4))
     }
 }
+
