@@ -1329,6 +1329,11 @@ private enum MVDTrainingArchiveInstaller {
             let outputPath = output.standardizedFileURL.path
             guard outputPath == rootPath || outputPath.hasPrefix(rootPath + "/") else { continue }
             try fileManager.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
+            // A stale model ZIP may still contain a legacy nested CMM. Replace
+            // duplicate paths so the dedicated shared CMM archive wins.
+            if fileManager.fileExists(atPath: output.path) {
+                try fileManager.removeItem(at: output)
+            }
             _ = try archive.extract(entry, to: output)
         }
     }
