@@ -336,7 +336,7 @@ final class MVDLocalStore: ObservableObject {
     /// model folders on the server and is reused by multiple fleets.
     func fetchLibraryManifest(customer: String, completion: @escaping ([MVDLibraryOption]) -> Void) {
         let encodedCustomer = customer.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? customer
-        guard let url = URL(string: "https://aeronexares.tail027590.ts.net/fleet-manifest/\(encodedCustomer)") else {
+        guard let url = URL(string: "http://100.109.229.98:5050/fleet-manifest/\(encodedCustomer)") else {
             DispatchQueue.main.async { completion([]) }
             return
         }
@@ -1122,7 +1122,7 @@ final class MVDLocalStore: ObservableObject {
         let encodedCustomer = customer.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? customer
         let encodedManufacturer = manufacturer.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? manufacturer
         let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
-        guard let url = URL(string: "https://aeronexares.tail027590.ts.net/fleet-download/\(encodedCustomer)/\(encodedManufacturer)/\(encodedModel)") else {
+        guard let url = URL(string: "http://100.109.229.98:5050/fleet-download/\(encodedCustomer)/\(encodedManufacturer)/\(encodedModel)") else {
             completion("INVALID DOWNLOAD URL")
             return
         }

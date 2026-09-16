@@ -27,10 +27,10 @@ private struct MVDLogo: View {
     private var logoImage: UIImage? {
         // The catalog asset is the canonical in-app logo. Keep the raw bundle
         // fallbacks for older installations and development builds.
-        if let image = UIImage(named: "SmartLookAppLogo") {
+        if let image = UIImage(named: "SmartLookAppLogo-v12.4") {
             return image
         }
-        if let image = UIImage(named: "SmartLookAppLogo-v12.4") {
+        if let image = UIImage(named: "SmartLookAppLogo") {
             return image
         }
         for resourceName in ["SmartLookAppLogo-v12.4", "SmartLookAppLogo"] {
@@ -47,7 +47,8 @@ private struct MVDLogo: View {
             if let logoImage {
                 Image(uiImage: logoImage)
                     .resizable()
-                    .scaledToFit()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Image(systemName: "airplane.circle.fill")
                     .resizable()
@@ -55,8 +56,7 @@ private struct MVDLogo: View {
                     .foregroundStyle(.blue)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.18)))
+        .accessibilityLabel("Smart LookApp")
     }
 }
 
@@ -472,7 +472,6 @@ struct SearchView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                MVDLogo().frame(width: 72, height: 72)
                 Text("AMERICAN AIRLINES").font(.title3.weight(.black))
                 Text("Aircraft: \(session.nose) • \(session.aircraft?.model ?? "B777-300")").foregroundStyle(.secondary)
                 if !libraryDownloadStatus.isEmpty {

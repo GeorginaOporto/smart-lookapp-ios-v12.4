@@ -22,6 +22,19 @@
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>SmartLookApp uses the camera to stage training photos locally on this iPad.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>100.109.229.98</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>SmartLookApp uses selected photos locally for visual search and OCR.</string>
 	<key>UIFileSharingEnabled</key>
