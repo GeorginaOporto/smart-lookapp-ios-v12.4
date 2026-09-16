@@ -42,7 +42,7 @@
 		A0000000000000000000001E /* mobile_sam_encoder.onnx */ = {isa = PBXFileReference; lastKnownFileType = file; path = Models/mobile_sam_encoder.onnx; sourceTree = "<group>"; };
 		A0000000000000000000001F /* mobilenetv2_embedding.onnx */ = {isa = PBXFileReference; lastKnownFileType = file; path = Models/mobilenetv2_embedding.onnx; sourceTree = "<group>"; };
 		A00000000000000000000021 /* mobilenetv2_embedding.onnx.data */ = {isa = PBXFileReference; lastKnownFileType = file; path = Models/mobilenetv2_embedding.onnx.data; sourceTree = "<group>"; };
-		A00000000000000000000025 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A00000000000000000000025 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = SmartLookApp/Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
