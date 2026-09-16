@@ -1118,7 +1118,20 @@ final class MVDLocalStore: ObservableObject {
     /// put a shared CMM inside an aircraft model folder.
     func downloadTrainingLibrary(customer: String, manufacturer: String, model: String,
                                  completion: @escaping (String) -> Void) {
-        guard !isPreparing else { completion("TRAINING INDEX BUSY"); return }
+        guard !isPreparing else {
+            // Installing one archive refreshes the local index. When this
+            // method belongs to a multi-library queue, wait for that refresh
+            // instead of aborting the remaining model/CMM downloads.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.downloadTrainingLibrary(
+                    customer: customer,
+                    manufacturer: manufacturer,
+                    model: model,
+                    completion: completion
+                )
+            }
+            return
+        }
         let encodedCustomer = customer.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? customer
         let encodedManufacturer = manufacturer.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? manufacturer
         let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
