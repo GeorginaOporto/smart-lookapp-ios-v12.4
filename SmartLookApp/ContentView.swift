@@ -690,22 +690,22 @@ struct SearchView: View {
             .padding(16)
         }
         .background(MVDTheme.background.ignoresSafeArea())
-        .alert("TRAINING LIBRARY REQUIRED", isPresented: $showLibraryDownload) {
-            Button("DOWNLOAD") {
-                guard let aircraft = session.aircraft else { return }
-                libraryDownloadStatus = "REQUESTING \(aircraft.model) LIBRARY…"
-                store.downloadTrainingLibrary(
+        .sheet(isPresented: $showLibraryDownload) {
+            if let aircraft = session.aircraft {
+                LibraryDownloadSheet(
+                    store: store,
                     customer: aircraft.customer,
-                    manufacturer: aircraft.manufacturer,
-                    model: aircraft.model
+                    requiredManufacturer: aircraft.manufacturer,
+                    requiredModel: aircraft.model
                 ) { status in
                     libraryDownloadStatus = status
                     searchStatus = status
                 }
+                .presentationDetents([.medium, .large])
+            } else {
+                Text("NO FLEET SELECTED")
+                    .padding()
             }
-            Button("CANCEL", role: .cancel) { }
-        } message: {
-            Text("The \(session.aircraft?.model ?? "selected fleet") training library is not installed on this iPad. Download it from the server through Tailscale, then press SEARCH again.")
         }
         .onChange(of: session.nose) { _ in
             if manual.hasPrefix("AARD") { manual = "AMM" }
@@ -809,6 +809,153 @@ struct SearchView: View {
             .background(Color.black.opacity(0.22))
             .clipShape(RoundedRectangle(cornerRadius: 10))
         }
+    }
+}
+
+private struct LibraryDownloadSheet: View {
+    @ObservedObject var store: MVDLocalStore
+    let customer: String
+    let requiredManufacturer: String
+    let requiredModel: String
+    let onFinished: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var options: [MVDLibraryOption] = []
+    @State private var selectedKeys: Set<String> = []
+    @State private var isLoading = true
+    @State private var isDownloading = false
+    @State private var status = "LOADING AVAILABLE LIBRARIES…"
+
+    private var requiredKey: String { "\(requiredManufacturer)/\(requiredModel)" }
+    private var sharedCMMKey: String { "\(requiredManufacturer)/CMM" }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("\(requiredModel) is required for the selected nose. Shared CMM is selected automatically because it is stored outside the aircraft model folders and is reused by multiple fleets.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                if isLoading {
+                    Section {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text(status).font(.caption.weight(.semibold))
+                        }
+                    }
+                } else if options.isEmpty {
+                    Section {
+                        Text("NO LIBRARIES AVAILABLE FROM SERVER")
+                            .foregroundStyle(.red)
+                        Text("Verify that the server is running and reachable through Tailscale.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Section("SELECT LIBRARIES") {
+                        ForEach(options) { option in
+                            let installed = isInstalled(option)
+                            let required = isRequired(option)
+                            Button {
+                                if selectedKeys.contains(option.id) {
+                                    selectedKeys.remove(option.id)
+                                } else {
+                                    selectedKeys.insert(option.id)
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: selectedKeys.contains(option.id) ? "checkmark.square.fill" : "square")
+                                        .foregroundStyle(selectedKeys.contains(option.id) ? .blue : .secondary)
+                                        .font(.title3)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(option.key).font(.headline)
+                                        if installed {
+                                            Text("INSTALLED")
+                                                .font(.caption.weight(.bold))
+                                                .foregroundStyle(.green)
+                                        } else if required {
+                                            Text("REQUIRED — INCLUDES SHARED CMM")
+                                                .font(.caption.weight(.bold))
+                                                .foregroundStyle(.orange)
+                                        } else if option.sizeMB > 0 {
+                                            Text(String(format: "%.1f MB", option.sizeMB))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(installed || required || isDownloading)
+                        }
+                    }
+                }
+
+                if !status.isEmpty && !isLoading {
+                    Section {
+                        Text(status)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(status.contains("FAILED") ? .red : .secondary)
+                    }
+                }
+            }
+            .navigationTitle("DOWNLOAD TRAINING")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("CANCEL") { dismiss() }
+                        .disabled(isDownloading)
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                Button {
+                    let selected = options.filter { selectedKeys.contains($0.id) }
+                    guard !selected.isEmpty else { return }
+                    isDownloading = true
+                    status = "STARTING DOWNLOAD…"
+                    store.downloadTrainingLibraries(customer: customer, selections: selected) { update in
+                        status = update
+                        if update == "TRAINING LIBRARIES INSTALLED" || update.contains("FAILED") {
+                            isDownloading = false
+                            onFinished(update)
+                            if update == "TRAINING LIBRARIES INSTALLED" { dismiss() }
+                        }
+                    }
+                } label: {
+                    Label("DOWNLOAD SELECTED (\(selectedKeys.count))", systemImage: "arrow.down.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(isLoading || isDownloading || selectedKeys.isEmpty)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial)
+            }
+        }
+        .task {
+            store.fetchLibraryManifest(customer: customer) { fetched in
+                var byKey = Dictionary(uniqueKeysWithValues: fetched.map { ($0.key, $0) })
+                byKey[requiredKey] = byKey[requiredKey] ?? MVDLibraryOption(key: requiredKey, version: nil, lastUpdated: nil, sizeMB: 0)
+                byKey[sharedCMMKey] = byKey[sharedCMMKey] ?? MVDLibraryOption(key: sharedCMMKey, version: nil, lastUpdated: nil, sizeMB: 0)
+                let loaded = byKey.values.sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }
+                options = loaded
+                selectedKeys = Set(loaded.filter { !isInstalled($0) && isRequired($0) }.map(\.id))
+                isLoading = false
+                status = loaded.isEmpty ? "NO LIBRARIES AVAILABLE FROM SERVER" : "SELECT THE LIBRARIES TO INSTALL"
+            }
+        }
+    }
+
+    private func isRequired(_ option: MVDLibraryOption) -> Bool {
+        option.id == requiredKey || option.id == sharedCMMKey
+    }
+
+    private func isInstalled(_ option: MVDLibraryOption) -> Bool {
+        guard let parts = option.parts else { return false }
+        return store.hasTrainingLibrary(customer: customer, manufacturer: parts.manufacturer, model: parts.model)
     }
 }
 
@@ -1104,8 +1251,12 @@ struct SearchResult: View {
     private func openDocumentButton(_ title: String, url: URL, tint: Color? = nil) -> some View {
         Button { openDocument(url, title: title) } label: {
             Label(title, systemImage: "safari")
+                .frame(maxWidth: .infinity)
         }
-        .foregroundStyle(tint ?? .blue)
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .tint(tint ?? .blue)
+        .accessibilityHint("Opens the document in the integrated browser")
     }
 
     var body: some View {
@@ -1184,13 +1335,24 @@ struct SearchResult: View {
             } else {
                 Label("DOCUMENT LINK NOT AVAILABLE", systemImage: "link.slash").foregroundStyle(.secondary)
             }
-            Button(action: sendToMOC) {
-                Label(isSendingToMOC ? "SENDING TO MOC…" : "SEND TO MOC", systemImage: "paperplane.fill")
-                    .frame(maxWidth: .infinity)
+            HStack {
+                Spacer()
+                Button(action: sendToMOC) {
+                    if isSendingToMOC {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "paperplane.fill")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(.blue)
+                .frame(width: 52, height: 46)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
+                .accessibilityLabel(isSendingToMOC ? "Sending to MOC" : "Send to MOC")
+                .accessibilityHint("Sends the selected result and images to the MOC Hub")
+                .disabled(isSendingToMOC)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.blue)
-            .disabled(isSendingToMOC)
             if !mocMessage.isEmpty {
                 Text(mocMessage).font(.caption).foregroundStyle(mocMessage.hasPrefix("Unable") ? .red : .green)
             }
