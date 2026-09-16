@@ -25,21 +25,13 @@ struct MVDSession {
 
 private struct MVDLogo: View {
     private var logoImage: UIImage? {
-        // The catalog asset is the canonical in-app logo. Keep the raw bundle
-        // fallbacks for older installations and development builds.
-        if let image = UIImage(named: "SmartLookAppLogo-v12.4") {
-            return image
+        // Match the working IPA: use exactly one raw bundle resource. Looking
+        // up several similarly named assets can select a catalog variant and
+        // make SwiftUI render the wrong/cropped image on iPad.
+        guard let url = Bundle.main.url(forResource: "SmartLookAppLogo", withExtension: "png") else {
+            return nil
         }
-        if let image = UIImage(named: "SmartLookAppLogo") {
-            return image
-        }
-        for resourceName in ["SmartLookAppLogo-v12.4", "SmartLookAppLogo"] {
-            if let url = Bundle.main.url(forResource: resourceName, withExtension: "png"),
-               let image = UIImage(contentsOfFile: url.path) {
-                return image
-            }
-        }
-        return nil
+        return UIImage(contentsOfFile: url.path)
     }
 
     var body: some View {
@@ -48,6 +40,7 @@ private struct MVDLogo: View {
                 Image(uiImage: logoImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
+                    .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Image(systemName: "airplane.circle.fill")

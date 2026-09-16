@@ -1139,7 +1139,7 @@ final class MVDLocalStore: ObservableObject {
             }.resume()
             semaphore.wait()
             guard let downloadedURL, (200..<300).contains(statusCode) else {
-                DispatchQueue.main.async { completion("TRAINING DOWNLOAD FAILED (\(statusCode))") }
+                DispatchQueue.main.async { completion("TRAINING DOWNLOAD FAILED (\(statusCode)) — \(manufacturer)/\(model)") }
                 return
             }
             let destination = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -1179,7 +1179,7 @@ final class MVDLocalStore: ObservableObject {
             return parts.manufacturer
         })
         for manufacturer in manufacturers {
-            let cmmKey = "(manufacturer)/CMM"
+            let cmmKey = "\(manufacturer)/CMM"
             if unique[cmmKey] == nil {
                 unique[cmmKey] = MVDLibraryOption(
                     key: cmmKey,
