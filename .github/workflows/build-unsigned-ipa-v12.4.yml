@@ -22,8 +22,6 @@ jobs:
           set -euo pipefail
           pod install --repo-update
           unzip -o SmartLookApp/Models/mobile_sam_encoder.onnx.zip -d SmartLookApp/Models
-          cp SmartLookApp/SmartLookAppLogo.png /tmp/SmartLookAppLogo.jpg
-          sips -s format png /tmp/SmartLookAppLogo.jpg --out SmartLookApp/SmartLookAppLogo.png
       - name: Build unsigned device app
         run: |
           set -euo pipefail
@@ -45,4 +43,3 @@ jobs:
           files: build/SmartLookApp-v12.4-unsigned.ipa
           draft: false
           prerelease: true
-
