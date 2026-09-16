@@ -240,6 +240,25 @@ final class MVDMateReadingSession: ObservableObject {
 
 /// Local-only store. Real AA resources are imported later into Application Support;
 /// this fixture is intentionally sanitized and contains no aircraft data.
+struct MVDLibraryOption: Identifiable, Hashable {
+    let key: String
+    let version: Int?
+    let lastUpdated: String?
+    let sizeMB: Double
+
+    var id: String { key }
+
+    var parts: (manufacturer: String, model: String)? {
+        let values = key.split(separator: "/", maxSplits: 1).map(String.init)
+        guard values.count == 2, !values[0].isEmpty, !values[1].isEmpty else { return nil }
+        return (values[0], values[1])
+    }
+
+    var isSharedCMM: Bool {
+        parts?.model.caseInsensitiveCompare("CMM") == .orderedSame
+    }
+}
+
 final class MVDLocalStore: ObservableObject {
     /// Search results must come from private TrainingData imported on the iPad.
     /// Keeping this empty prevents a demo fixture from being presented as a real match.
@@ -308,6 +327,33 @@ final class MVDLocalStore: ObservableObject {
             }
         }
         return false
+    }
+
+    /// Loads the server manifest used by the iOS fleet selector. CMM appears
+    /// as its own shared library entry because it is stored beside aircraft
+    /// model folders on the server and is reused by multiple fleets.
+    func fetchLibraryManifest(customer: String, completion: @escaping ([MVDLibraryOption]) -> Void) {
+        let encodedCustomer = customer.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? customer
+        guard let url = URL(string: "https://aeronexares.tail027590.ts.net/fleet-manifest/\(encodedCustomer)") else {
+            DispatchQueue.main.async { completion([]) }
+            return
+        }
+        URLSession.shared.dataTask(with: url) { data, response, _ in
+            var options: [MVDLibraryOption] = []
+            if let http = response as? HTTPURLResponse,
+               (200..<300).contains(http.statusCode),
+               let data,
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                options = object.keys.sorted().compactMap { key in
+                    let value = object[key] as? [String: Any] ?? [:]
+                    let version = (value["version"] as? NSNumber)?.intValue
+                    let lastUpdated = value["last_updated"] as? String
+                    let sizeMB = (value["size_mb"] as? NSNumber)?.doubleValue ?? 0
+                    return MVDLibraryOption(key: key, version: version, lastUpdated: lastUpdated, sizeMB: sizeMB)
+                }
+            }
+            DispatchQueue.main.async { completion(options) }
+        }.resume()
     }
 
     private func containsTrainingFile(_ root: URL, fileManager: FileManager) -> Bool {
@@ -1115,6 +1161,43 @@ final class MVDLocalStore: ObservableObject {
                 DispatchQueue.main.async { completion("TRAINING INSTALL FAILED: \(error.localizedDescription)") }
             }
         }
+    }
+
+    /// Installs several manifest entries sequentially. Separate archives are
+    /// intentional: the server keeps shared CMM outside model folders, while
+    /// the installer merges every archive into the same Documents/TrainingData
+    /// tree without overwriting unrelated fleets.
+    func downloadTrainingLibraries(customer: String, selections: [MVDLibraryOption],
+                                   completion: @escaping (String) -> Void) {
+        var unique: [String: MVDLibraryOption] = [:]
+        selections.forEach { unique[$0.key] = $0 }
+        let ordered = unique.values.sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }
+        guard !ordered.isEmpty else {
+            completion("NO LIBRARIES SELECTED")
+            return
+        }
+
+        func downloadNext(_ index: Int) {
+            guard index < ordered.count else {
+                completion("TRAINING LIBRARIES INSTALLED")
+                return
+            }
+            let option = ordered[index]
+            guard let parts = option.parts else {
+                completion("INVALID LIBRARY ROUTE: \(option.key)")
+                return
+            }
+            completion("DOWNLOADING \(option.key) (\(index + 1)/\(ordered.count))…")
+            downloadTrainingLibrary(customer: customer, manufacturer: parts.manufacturer, model: parts.model) { status in
+                guard status == "TRAINING LIBRARY INSTALLED" else {
+                    completion(status)
+                    return
+                }
+                downloadNext(index + 1)
+            }
+        }
+
+        downloadNext(0)
     }
 
     func syncPendingTrainings(completion: @escaping (String) -> Void) {
