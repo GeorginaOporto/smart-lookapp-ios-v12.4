@@ -1044,6 +1044,51 @@ final class MVDLocalStore: ObservableObject {
         loadPrivateTrainingIndex()
     }
 
+    /// Downloads the published library for the selected fleet and installs it
+    /// in the app's Documents/TrainingData root, which is also visible through
+    /// Apple Devices. The server archive already contains the AA/Boeing/model
+    /// hierarchy, so extraction preserves the route used by Search and Audit.
+    func downloadTrainingLibrary(customer: String, manufacturer: String, model: String,
+                                 completion: @escaping (String) -> Void) {
+        guard !isPreparing else { completion("TRAINING INDEX BUSY"); return }
+        let encodedCustomer = customer.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? customer
+        let encodedManufacturer = manufacturer.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? manufacturer
+        let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
+        guard let url = URL(string: "https://aeronexares.tail027590.ts.net/fleet-download/\(encodedCustomer)/\(encodedManufacturer)/\(encodedModel)") else {
+            completion("INVALID DOWNLOAD URL")
+            return
+        }
+        completion("DOWNLOADING \(model) TRAINING…")
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let semaphore = DispatchSemaphore(value: 0)
+            var downloadedURL: URL?
+            var statusCode = 0
+            URLSession.shared.downloadTask(with: url) { location, response, _ in
+                downloadedURL = location
+                statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+                semaphore.signal()
+            }.resume()
+            semaphore.wait()
+            guard let downloadedURL, (200..<300).contains(statusCode) else {
+                DispatchQueue.main.async { completion("TRAINING DOWNLOAD FAILED (\(statusCode))") }
+                return
+            }
+            let destination = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("TrainingData", isDirectory: true)
+            do {
+                try MVDTrainingArchiveInstaller.install(zipURL: downloadedURL, into: destination)
+                DispatchQueue.main.async {
+                    self.hasPreparedPrivateTraining = false
+                    self.loadPrivateTrainingIndex()
+                    completion("TRAINING LIBRARY INSTALLED")
+                }
+            } catch {
+                DispatchQueue.main.async { completion("TRAINING INSTALL FAILED: \(error.localizedDescription)") }
+            }
+        }
+    }
+
     func syncPendingTrainings(completion: @escaping (String) -> Void) {
         let root = MVDTrainingPaths.newTrainingsRoot
         let customers = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]))?.filter { $0.hasDirectoryPath } ?? []
@@ -1080,6 +1125,31 @@ final class MVDLocalStore: ObservableObject {
                 DispatchQueue.main.async { completion(acknowledged ? "TRAININGS SENT AND PUBLISHED" : "SYNC FAILED (\(code))") }
             }.resume()
         }
+    }
+}
+
+private enum MVDTrainingArchiveInstaller {
+    static func install(zipURL: URL, into destinationRoot: URL) throws {
+        guard let archive = Archive(url: zipURL, accessMode: .read) else {
+            throw InstallerError.invalidArchive
+        }
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+        let rootPath = destinationRoot.standardizedFileURL.path
+        for entry in archive where entry.type == .file {
+            let relative = entry.path.replacingOccurrences(of: "\\", with: "/")
+            guard !relative.hasPrefix("/"), !relative.contains("../") else { continue }
+            let output = destinationRoot.appendingPathComponent(relative)
+            let outputPath = output.standardizedFileURL.path
+            guard outputPath == rootPath || outputPath.hasPrefix(rootPath + "/") else { continue }
+            try fileManager.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
+            _ = try archive.extract(entry, to: output)
+        }
+    }
+
+    private enum InstallerError: LocalizedError {
+        case invalidArchive
+        var errorDescription: String? { "The training archive is invalid." }
     }
 }
 
@@ -1255,3 +1325,4 @@ private enum MVDLocalEmbedding {
         return dot / (left * right)
     }
 }
+

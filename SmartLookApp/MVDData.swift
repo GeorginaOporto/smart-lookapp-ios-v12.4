@@ -500,3 +500,4 @@ enum MVDLocationData {
         return configuration.seats.first { $0.contains(seat: selection.location) }?.cmmNumber
     }
 }
+

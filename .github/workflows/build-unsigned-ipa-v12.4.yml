@@ -45,3 +45,4 @@ jobs:
           files: build/SmartLookApp-v12.4-unsigned.ipa
           draft: false
           prerelease: true
+

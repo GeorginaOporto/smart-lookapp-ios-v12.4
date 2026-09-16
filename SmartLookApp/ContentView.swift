@@ -323,6 +323,7 @@ struct DashboardView: View {
     @ObservedObject var store: MVDLocalStore
     @Binding var selectedTab: Int
     @State private var syncStatus = ""
+    @State private var downloadStatus = ""
 
     var body: some View {
         ScrollView {
@@ -345,6 +346,22 @@ struct DashboardView: View {
                 ActionButton(title: "System Performance", icon: "chart.bar.xaxis", color: .orange) { }
 
                 Text("SYSTEM UTILITIES").sectionTitle()
+                Button {
+                    guard let aircraft = session.aircraft else {
+                        downloadStatus = "NO FLEET SELECTED"
+                        return
+                    }
+                    store.downloadTrainingLibrary(
+                        customer: aircraft.customer,
+                        manufacturer: aircraft.manufacturer,
+                        model: aircraft.model
+                    ) { downloadStatus = $0 }
+                } label: {
+                    Label("DOWNLOAD TRAINING UPDATE", systemImage: "arrow.down.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                if !downloadStatus.isEmpty { Text(downloadStatus).font(.caption).foregroundStyle(.green) }
                 if session.role.uppercased() == "TRAINER" {
                     Button {
                         store.syncPendingTrainings { syncStatus = $0 }
@@ -2385,3 +2402,4 @@ private enum MVDTheme {
 }
 
 #Preview { ContentView() }
+
