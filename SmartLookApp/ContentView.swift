@@ -25,7 +25,17 @@ struct MVDSession {
 
 private struct MVDLogo: View {
     private var logoImage: UIImage? {
-        guard let url = Bundle.main.url(forResource: "SmartLookAppLogo-v12.4", withExtension: "png") else { return nil }
+        // Prefer the bundle image loader so the logo works whether Xcode
+        // stores it as a normal resource or optimizes it during packaging.
+        if let image = UIImage(named: "SmartLookAppLogo-v12.4") {
+            return image
+        }
+        if let image = UIImage(named: "SmartLookAppLogo") {
+            return image
+        }
+        guard let url = Bundle.main.url(forResource: "SmartLookAppLogo-v12.4", withExtension: "png") else {
+            return nil
+        }
         return UIImage(contentsOfFile: url.path)
     }
 
@@ -416,6 +426,8 @@ struct SearchView: View {
     @State private var showAppLibrary = false
     @State private var showExtractor = false
     @State private var showTrainingRequest = false
+    @State private var showLibraryDownload = false
+    @State private var libraryDownloadStatus = ""
     @State private var imageStatus = "No image selected"
 
     private var trainingRequestBody: String {
@@ -458,6 +470,11 @@ struct SearchView: View {
                 MVDLogo().frame(width: 72, height: 72)
                 Text("AMERICAN AIRLINES").font(.title3.weight(.black))
                 Text("Aircraft: \(session.nose) • \(session.aircraft?.model ?? "B777-300")").foregroundStyle(.secondary)
+                if !libraryDownloadStatus.isEmpty {
+                    Text(libraryDownloadStatus)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(libraryDownloadStatus.contains("FAILED") ? .red : .green)
+                }
                 HStack {
                     Spacer()
                     Button("RELOAD") { store.loadPrivateTrainingIndex() }
@@ -602,9 +619,20 @@ struct SearchView: View {
                     .tint(.orange)
                 }
                 Button {
+                    guard let aircraft = session.aircraft else {
+                        searchStatus = "NO FLEET SELECTED"
+                        resultShown = true
+                        return
+                    }
+                    if !store.hasTrainingLibrary(customer: aircraft.customer, manufacturer: aircraft.manufacturer, model: aircraft.model) {
+                        searchStatus = "TRAINING LIBRARY REQUIRED FOR \(aircraft.model)"
+                        resultShown = true
+                        showLibraryDownload = true
+                        return
+                    }
                     let hasTextQuery = !eicas.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !fim.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !maint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     if !hasTextQuery, let context = sourceImage {
-                        results = store.searchByImages(context: context, extracted: extractedImage, manual: manual, nose: session.nose, cmmNumber: selectedCMM)
+                        results = store.searchByImages(context: context, extracted: extractedImage, manual: manual, nose: session.nose, cmmNumber: selectedCMM, includePending: session.role.uppercased() == "TRAINER")
                     } else {
                         results = store.search(eicas: eicas, fim: fim, maint: maint, manual: manual, nose: session.nose, cmmNumber: selectedCMM, includePending: session.role.uppercased() == "TRAINER")
                     }
@@ -662,6 +690,23 @@ struct SearchView: View {
             .padding(16)
         }
         .background(MVDTheme.background.ignoresSafeArea())
+        .alert("TRAINING LIBRARY REQUIRED", isPresented: $showLibraryDownload) {
+            Button("DOWNLOAD") {
+                guard let aircraft = session.aircraft else { return }
+                libraryDownloadStatus = "REQUESTING \(aircraft.model) LIBRARY…"
+                store.downloadTrainingLibrary(
+                    customer: aircraft.customer,
+                    manufacturer: aircraft.manufacturer,
+                    model: aircraft.model
+                ) { status in
+                    libraryDownloadStatus = status
+                    searchStatus = status
+                }
+            }
+            Button("CANCEL", role: .cancel) { }
+        } message: {
+            Text("The \(session.aircraft?.model ?? "selected fleet") training library is not installed on this iPad. Download it from the server through Tailscale, then press SEARCH again.")
+        }
         .onChange(of: session.nose) { _ in
             if manual.hasPrefix("AARD") { manual = "AMM" }
         }

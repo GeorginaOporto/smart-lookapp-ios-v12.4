@@ -265,7 +265,7 @@ final class MVDLocalStore: ObservableObject {
         guard !hasPreparedPrivateTraining, !isPreparing else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            if let snapshot = self.loadCachedTrainingSnapshot() {
+            if let snapshot = self.loadCachedTrainingIndex() {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.applyTrainingSnapshot(snapshot)
@@ -283,6 +283,39 @@ final class MVDLocalStore: ObservableObject {
     /// the directory structure remains the Android-compatible search hierarchy.
     func loadPrivateTrainingIndex() {
         beginPrivateTrainingLoad(importArchives: true)
+    }
+
+    /// Returns whether the selected fleet has a local published library.
+    /// The fleet is resolved from the selected nose; no fleet is requested at
+    /// login time. Apple Devices installs the published archive in Documents,
+    /// while older local copies may still exist in Application Support.
+    func hasTrainingLibrary(customer: String, manufacturer: String, model: String) -> Bool {
+        let wanted = [normalized(customer), normalized(manufacturer), normalized(model)]
+        let fileManager = FileManager.default
+        for root in privateTrainingRoots() {
+            let components = root.pathComponents.map(normalized)
+            let rootMatches = wanted.allSatisfy { value in value.isEmpty || components.contains(value) }
+            if rootMatches && containsTrainingFile(root, fileManager: fileManager) { return true }
+            guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey]) else { continue }
+            for case let url as URL in enumerator {
+                guard url.pathExtension.caseInsensitiveCompare("json") == .orderedSame else { continue }
+                let parts = url.pathComponents.map(normalized)
+                let hasFleetModel = !wanted[2].isEmpty && parts.contains(wanted[2])
+                let hasSharedCMM = parts.contains("CMM")
+                if parts.contains(wanted[0]) && parts.contains(wanted[1]) && (hasFleetModel || hasSharedCMM) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private func containsTrainingFile(_ root: URL, fileManager: FileManager) -> Bool {
+        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey]) else { return false }
+        return enumerator.contains { item in
+            guard let url = item as? URL else { return false }
+            return url.pathExtension.caseInsensitiveCompare("json") == .orderedSame
+        }
     }
 
     private func beginPrivateTrainingLoad(importArchives: Bool) {
@@ -325,12 +358,6 @@ final class MVDLocalStore: ObservableObject {
         guard let data = try? Data(contentsOf: trainingCacheURL),
               let cache = try? JSONDecoder().decode(TrainingIndexCache.self, from: data),
               cache.signature == trainingSourceSignature() else { return nil }
-        return (cache.training, cache.routes)
-    }
-
-    private func loadCachedTrainingSnapshot() -> (training: [MVDTrainingPayload], routes: [String: MVDTrainingRoute])? {
-        guard let data = try? Data(contentsOf: trainingCacheURL),
-              let cache = try? JSONDecoder().decode(TrainingIndexCache.self, from: data) else { return nil }
         return (cache.training, cache.routes)
     }
 
@@ -799,7 +826,7 @@ final class MVDLocalStore: ObservableObject {
     /// aircraft area, while an optional extracted piece refines the match.
     /// The context remains mandatory so an extraction can never erase the
     /// positional information from the original photograph.
-    func searchByImages(context: UIImage, extracted: UIImage?, manual: String, nose: String, cmmNumber: String = "") -> [MVDTrainingPayload] {
+    func searchByImages(context: UIImage, extracted: UIImage?, manual: String, nose: String, cmmNumber: String = "", includePending: Bool = false) -> [MVDTrainingPayload] {
         guard let contextQuery = MVDOnnxEmbedding.shared.vector(for: context) else { return [] }
         let extractedQuery = extracted.flatMap { MVDOnnxEmbedding.shared.vector(for: $0) }
         let wantedManual = normalizedManual(manual)
@@ -807,6 +834,7 @@ final class MVDLocalStore: ObservableObject {
         let wantedCMM = normalized(cmmNumber)
         let aircraft = aircraftForNose(nose)
         let candidates = training.filter { item in
+            guard includePending || !pendingTrainingIDs.contains(item.id) else { return false }
             let route = routeByTrainingID[item.id]
             return matchesManual(item, route: route, wanted: wantedManual, cmmNumber: wantedCMM) &&
             matchesAircraft(item, route: route, expected: aircraft) &&
