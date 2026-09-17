@@ -340,13 +340,27 @@ final class MVDMobileSAM {
                 }
             }
         }
-        // `output` is laid out row 0 first, matching the top-left pixel order
-        // used by `rgbaBitmap`. Build the CGImage directly from that buffer so
-        // Core Graphics cannot introduce a second vertical transform. The
-        // source was already rendered to `.up`, so the crop must also be `.up`;
-        // applying the original EXIF orientation again would rotate it twice.
-        guard let provider = CGDataProvider(data: NSData(bytes: output,
-                                                         length: output.count) as CFData),
+        // `output` is generated in the same top-left row order used by the
+        // mask and by `rgbaBitmap`. A CGImage created directly from a provider
+        // consumes the provider rows in the opposite vertical direction on
+        // this path, so reverse the rows once at this raster boundary. This
+        // is a vertical row-order correction, not a 90-degree image rotation
+        // and not a change to the user's tap coordinates.
+        var displayOutput = Array(repeating: UInt8(0), count: output.count)
+        for row in 0..<outputHeight {
+            let sourceRow = outputHeight - 1 - row
+            let sourceStart = sourceRow * outputWidth * 4
+            let destinationStart = row * outputWidth * 4
+            displayOutput.replaceSubrange(
+                destinationStart..<(destinationStart + outputWidth * 4),
+                with: output[sourceStart..<(sourceStart + outputWidth * 4)]
+            )
+        }
+
+        // The source was already rendered to `.up`, so the crop must also be
+        // `.up`; applying the original EXIF orientation again would rotate it.
+        guard let provider = CGDataProvider(data: NSData(bytes: displayOutput,
+                                                         length: displayOutput.count) as CFData),
               let result = CGImage(
                 width: outputWidth,
                 height: outputHeight,
