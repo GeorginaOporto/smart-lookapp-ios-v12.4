@@ -13,8 +13,6 @@
 		A00000000000000000000005 /* FleetArchitecture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000016 /* FleetArchitecture.swift */; };
 		A00000000000000000000006 /* B777FleetData.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000017 /* B777FleetData.swift */; };
 		A00000000000000000000007 /* CmmLocationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000018 /* CmmLocationView.swift */; };
-		A00000000000000000000009 /* SmartLookAppLogo.png in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001A /* SmartLookAppLogo.png */; };
-		A00000000000000000000022 /* SmartLookAppLogo-v12.4.png in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000023 /* SmartLookAppLogo-v12.4.png */; };
 		A0000000000000000000000A /* MVDMobileSAM.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001B /* MVDMobileSAM.swift */; };
 		A0000000000000000000000B /* MVDOnnxRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001C /* MVDOnnxRuntime.swift */; };
 		A0000000000000000000000C /* mobile_sam.onnx in Resources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000001D /* mobile_sam.onnx */; };
@@ -34,8 +32,6 @@
 		A00000000000000000000016 /* FleetArchitecture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetArchitecture.swift; sourceTree = "<group>"; };
 		A00000000000000000000017 /* B777FleetData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = B777FleetData.swift; sourceTree = "<group>"; };
 		A00000000000000000000018 /* CmmLocationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmmLocationView.swift; sourceTree = "<group>"; };
-		A0000000000000000000001A /* SmartLookAppLogo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = SmartLookAppLogo.png; sourceTree = "<group>"; };
-		A00000000000000000000023 /* SmartLookAppLogo-v12.4.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = SmartLookAppLogo-v12.4.png; sourceTree = "<group>"; };
 		A0000000000000000000001B /* MVDMobileSAM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MVDMobileSAM.swift; sourceTree = "<group>"; };
 		A0000000000000000000001C /* MVDOnnxRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MVDOnnxRuntime.swift; sourceTree = "<group>"; };
 		A0000000000000000000001D /* mobile_sam.onnx */ = {isa = PBXFileReference; lastKnownFileType = file; path = Models/mobile_sam.onnx; sourceTree = "<group>"; };
@@ -51,7 +47,7 @@
 
 /* Begin PBXGroup section */
 		A00000000000000000000030 = {isa = PBXGroup; children = (A00000000000000000000031, A00000000000000000000032); sourceTree = "<group>"; };
-		A00000000000000000000031 /* SmartLookApp */ = {isa = PBXGroup; children = (A00000000000000000000011, A00000000000000000000012, A00000000000000000000013, A00000000000000000000014, A00000000000000000000015, A00000000000000000000016, A00000000000000000000017, A00000000000000000000018, A0000000000000000000001A, A00000000000000000000023, A0000000000000000000001B, A0000000000000000000001C, A0000000000000000000001D, A0000000000000000000001E, A0000000000000000000001F, A00000000000000000000021); path = SmartLookApp; sourceTree = "<group>"; };
+		A00000000000000000000031 /* SmartLookApp */ = {isa = PBXGroup; children = (A00000000000000000000011, A00000000000000000000012, A00000000000000000000013, A00000000000000000000014, A00000000000000000000015, A00000000000000000000016, A00000000000000000000017, A00000000000000000000018, A0000000000000000000001B, A0000000000000000000001C, A0000000000000000000001D, A0000000000000000000001E, A0000000000000000000001F, A00000000000000000000021); path = SmartLookApp; sourceTree = "<group>"; };
 		A00000000000000000000032 /* Products */ = {isa = PBXGroup; children = (A00000000000000000000010); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
@@ -64,7 +60,7 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		A00000000000000000000042 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000009, A00000000000000000000022, A00000000000000000000024, A0000000000000000000000C, A0000000000000000000000D, A0000000000000000000000E, A0000000000000000000000F); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000042 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000024, A0000000000000000000000C, A0000000000000000000000D, A0000000000000000000000E, A0000000000000000000000F); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */

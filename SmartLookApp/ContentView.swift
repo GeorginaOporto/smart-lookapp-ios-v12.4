@@ -25,13 +25,10 @@ struct MVDSession {
 
 private struct MVDLogo: View {
     private var logoImage: UIImage? {
-        // Match the working IPA: use exactly one raw bundle resource. Looking
-        // up several similarly named assets can select a catalog variant and
-        // make SwiftUI render the wrong/cropped image on iPad.
-        guard let url = Bundle.main.url(forResource: "SmartLookAppLogo", withExtension: "png") else {
-            return nil
-        }
-        return UIImage(contentsOfFile: url.path)
+        // Login and the header must use the same catalogued asset as the app
+        // icon family. The old loose PNG resource is malformed on the Xcode
+        // build runner and can make UIImage(contentsOfFile:) return nil.
+        UIImage(named: "SmartLookAppLogo", in: Bundle.main, compatibleWith: nil)
     }
 
     var body: some View {
@@ -39,7 +36,6 @@ private struct MVDLogo: View {
             if let logoImage {
                 Image(uiImage: logoImage)
                     .resizable()
-                    .aspectRatio(contentMode: .fit)
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
