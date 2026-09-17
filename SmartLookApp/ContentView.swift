@@ -1967,12 +1967,30 @@ private struct VisionExtractionView: View {
             GeometryReader { proxy in
                 ZStack {
                     Color.black
-                    Image(uiImage: visionImage)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .scaleEffect(zoomScale)
-                        .offset(panOffset)
+                    // Use the pixel-accurate UIKit canvas for both drawing
+                    // and hit-testing. SwiftUI's gesture location belongs to
+                    // the whole container, while the image itself is
+                    // letterboxed by scaledToFit; that made off-centre taps
+                    // resolve to the wrong source pixel.
+                    MVDTappableImageView(
+                        image: visionImage,
+                        zoomScale: zoomScale,
+                        pan: panOffset,
+                        onTapPixel: { pixel in
+                            guard !isProcessing,
+                                  let cgImage = visionImage.cgImage,
+                                  cgImage.width > 0,
+                                  cgImage.height > 0 else { return }
+                            let point = CGPoint(
+                                x: min(max(pixel.x / CGFloat(cgImage.width), 0), 1),
+                                y: min(max(pixel.y / CGFloat(cgImage.height), 0), 1)
+                            )
+                            selectedPoint = point
+                            extractionMessage = "Segmenting the tapped piece…"
+                            segment(at: point)
+                        }
+                    )
+                    .frame(width: proxy.size.width, height: proxy.size.height)
                     if let selectedPoint {
                         let baseRect = displayedImageRect(in: proxy.size)
                         let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
@@ -2010,15 +2028,6 @@ private struct VisionExtractionView: View {
                         .onEnded { _ in
                             panStart = panOffset
                         }
-                )
-                .simultaneousGesture(
-                    SpatialTapGesture().onEnded { value in
-                        guard !isProcessing,
-                              let point = normalizedPoint(at: value.location, in: proxy.size) else { return }
-                        selectedPoint = point
-                        extractionMessage = "Segmenting the tapped piece…"
-                        segment(at: point)
-                    }
                 )
                 .simultaneousGesture(
                     MagnificationGesture()
