@@ -1,6 +1,55 @@
 import Foundation
 import UIKit
+import CoreGraphics
 import onnxruntime_objc
+
+/// One explicit RGBA boundary shared by encoder input and extracted output.
+/// Raw bitmap contexts are not UIKit view contexts, so applying an extra CTM
+/// flip here mirrors the tensor while leaving the UIKit touch coordinates
+/// unchanged. The centre survives that error; every off-centre point does not.
+private enum MVDTopLeftRaster {
+    static let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue
+        | CGImageAlphaInfo.premultipliedLast.rawValue
+
+    static func pixels(_ image: CGImage) -> [UInt8]? {
+        guard let context = CGContext(
+            data: nil,
+            width: image.width,
+            height: image.height,
+            bitsPerComponent: 8,
+            bytesPerRow: image.width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo
+        ), let data = context.data else { return nil }
+        context.setBlendMode(.copy)
+        context.interpolationQuality = .none
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let pointer = data.assumingMemoryBound(to: UInt8.self)
+        return Array(UnsafeBufferPointer(
+            start: pointer,
+            count: image.width * image.height * 4
+        ))
+    }
+
+    static func image(_ pixels: [UInt8], width: Int, height: Int) -> CGImage? {
+        guard width > 0, height > 0,
+              pixels.count == width * height * 4,
+              let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )
+    }
+}
 
 private enum MVDMaskSelection {
     /// Choose a decoder proposal that contains the tapped area. A single
@@ -390,40 +439,13 @@ final class MVDMobileSAM {
                 }
             }
         }
-        // `output` is generated in the same top-left row order used by the
-        // mask and by `rgbaBitmap`. A CGImage created directly from a provider
-        // consumes the provider rows in the opposite vertical direction on
-        // this path, so reverse the rows once at this raster boundary. This
-        // is a vertical row-order correction, not a 90-degree image rotation
-        // and not a change to the user's tap coordinates.
-        var displayOutput = Array(repeating: UInt8(0), count: output.count)
-        for row in 0..<outputHeight {
-            let sourceRow = outputHeight - 1 - row
-            let sourceStart = sourceRow * outputWidth * 4
-            let destinationStart = row * outputWidth * 4
-            displayOutput.replaceSubrange(
-                destinationStart..<(destinationStart + outputWidth * 4),
-                with: output[sourceStart..<(sourceStart + outputWidth * 4)]
-            )
-        }
-
-        // The source was already rendered to `.up`, so the crop must also be
-        // `.up`; applying the original EXIF orientation again would rotate it.
-        guard let provider = CGDataProvider(data: NSData(bytes: displayOutput,
-                                                         length: displayOutput.count) as CFData),
-              let result = CGImage(
-                width: outputWidth,
-                height: outputHeight,
-                bitsPerComponent: 8,
-                bitsPerPixel: 32,
-                bytesPerRow: outputWidth * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                provider: provider,
-                decode: nil,
-                shouldInterpolate: false,
-                intent: .defaultIntent
-              ) else { return nil }
+        // Rebuild from the exact same row-major contract used by the tensor.
+        // No second row reversal and no EXIF orientation reapplication.
+        guard let result = MVDTopLeftRaster.image(
+            output,
+            width: outputWidth,
+            height: outputHeight
+        ) else { return nil }
         return UIImage(cgImage: result, scale: 1, orientation: .up)
     }
 
@@ -452,23 +474,8 @@ final class MVDMobileSAM {
     }
 
     private func rgbaBitmap(_ image: CGImage, width: Int, height: Int) -> [UInt8]? {
-        guard let context = CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ), let data = context.data else { return nil }
-        // Match UIKit's top-left image coordinates with the row order used by
-        // the Android Bitmap path. Without this transform, off-centre taps on
-        // portrait photos can be mirrored vertically before MobileSAM sees them.
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: 1, y: -1)
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        let pointer = data.assumingMemoryBound(to: UInt8.self)
-        return Array(UnsafeBufferPointer(start: pointer, count: width * height * 4))
+        guard width == image.width, height == image.height else { return nil }
+        return MVDTopLeftRaster.pixels(image)
     }
 }
 
