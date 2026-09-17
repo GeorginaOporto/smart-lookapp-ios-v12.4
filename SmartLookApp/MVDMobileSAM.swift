@@ -2,6 +2,73 @@ import Foundation
 import UIKit
 import onnxruntime_objc
 
+private enum MVDMaskSelection {
+    /// Choose a decoder proposal that contains the tapped area. A single
+    /// decoder pixel is too brittle for thin parts (for example a red strap),
+    /// because the screen tap can land on an anti-aliased edge after the
+    /// image has been letterboxed and resized to the model canvas.
+    static func candidate(
+        values: [Float],
+        scores: [Float],
+        width: Int,
+        height: Int,
+        count: Int,
+        point: CGPoint,
+        threshold: Float
+    ) -> Int? {
+        guard width > 0, height > 0, count > 0,
+              values.count >= count * width * height,
+              point.x.isFinite, point.y.isFinite else { return nil }
+
+        let centerX = min(max(Int(point.x.rounded()), 0), width - 1)
+        let centerY = min(max(Int(point.y.rounded()), 0), height - 1)
+        // Eight pixels at a 1024px model resolution is small enough to avoid
+        // jumping to a neighboring component, while covering a normal finger
+        // tap and mask-boundary quantization.
+        let radius = max(3, min(12, Int((CGFloat(min(width, height)) * 0.008).rounded())))
+        let planeSize = width * height
+
+        var best: (index: Int, iou: Float, hits: Int, peak: Float)?
+        for candidate in 0..<count {
+            let start = candidate * planeSize
+            var hits = 0
+            var peak = -Float.greatestFiniteMagnitude
+            let minY = max(0, centerY - radius)
+            let maxY = min(height - 1, centerY + radius)
+            let minX = max(0, centerX - radius)
+            let maxX = min(width - 1, centerX + radius)
+            for y in minY...maxY {
+                for x in minX...maxX {
+                    if hypot(CGFloat(x - centerX), CGFloat(y - centerY)) > CGFloat(radius) { continue }
+                    let value = values[start + y * width + x]
+                    peak = max(peak, value)
+                    if value > threshold { hits += 1 }
+                }
+            }
+            guard hits > 0 else { continue }
+            let iou = candidate < scores.count && scores[candidate].isFinite
+                ? scores[candidate]
+                : -Float.greatestFiniteMagnitude
+
+            if let current = best {
+                let hasComparableIoU = iou.isFinite && current.iou.isFinite
+                let shouldReplace: Bool
+                if hasComparableIoU && abs(iou - current.iou) > 0.02 {
+                    shouldReplace = iou > current.iou
+                } else if hits != current.hits {
+                    shouldReplace = hits > current.hits
+                } else {
+                    shouldReplace = peak > current.peak
+                }
+                if shouldReplace { best = (candidate, iou, hits, peak) }
+            } else {
+                best = (candidate, iou, hits, peak)
+            }
+        }
+        return best?.index
+    }
+}
+
 /// MobileSAM promptable segmenter. This is the iOS counterpart of Android's
 /// SmartSegmentEngine: one positive tap is sent to the encoder/decoder pair,
 /// and only the selected mask instance is rendered on a black background.
@@ -112,14 +179,14 @@ final class MVDMobileSAM {
                 outputNames: Set(decoderOutputNames),
                 runOptions: nil
             )
-            // Android consumes result.get(0) as the mask and result.get(1) as
-            // IoU. Keep the same first-output selection for this one-tap path.
-            guard let maskOutputName = decoderOutputNames.first,
-                  let maskValue = decoderOutputs[maskOutputName] else { return nil }
+            // Select by semantic output name. The order returned by ONNX
+            // Runtime is not a public contract; using `.first` can silently
+            // read IoU or low-resolution data as the actual mask.
+            guard let maskValue = decoderOutputs["masks"] else { return nil }
             let maskData = try maskValue.tensorData()
             let maskInfo = try maskValue.tensorTypeAndShapeInfo()
             let maskShape = maskInfo.shape.map { $0.intValue }
-            guard maskShape.count >= 2 else { return nil }
+            guard maskShape.count == 4, maskShape[0] == 1 else { return nil }
             let maskHeight = maskShape[maskShape.count - 2]
             let maskWidth = maskShape[maskShape.count - 1]
             guard maskWidth > 0,
@@ -130,26 +197,30 @@ final class MVDMobileSAM {
                 count: maskData.length / MemoryLayout<Float>.size
             ))
             let planeSize = maskWidth * maskHeight
-            guard allMaskValues.count >= planeSize else { return nil }
+            let candidateCount = max(1, maskShape[1])
+            guard allMaskValues.count >= candidateCount * planeSize else { return nil }
             let tapMaskPoint = CGPoint(
                 x: modelX * CGFloat(maskWidth) / CGFloat(inputSize),
                 y: modelY * CGFloat(maskHeight) / CGFloat(inputSize)
             )
-            // The decoder may return several candidate masks. Selecting the
-            // first plane is unreliable for small objects, because that plane
-            // can be the broad foreground proposal. Choose the proposal whose
-            // raw mask score is strongest exactly at the user's tap.
-            let tapX = min(max(Int(tapMaskPoint.x.rounded()), 0), maskWidth - 1)
-            let tapY = min(max(Int(tapMaskPoint.y.rounded()), 0), maskHeight - 1)
-            let candidateCount = max(1, allMaskValues.count / planeSize)
-            var selectedCandidate = 0
-            var bestCandidateScore = -Float.greatestFiniteMagnitude
-            for candidate in 0..<candidateCount {
-                let score = allMaskValues[candidate * planeSize + tapY * maskWidth + tapX]
-                if score > bestCandidateScore {
-                    bestCandidateScore = score
-                    selectedCandidate = candidate
-                }
+            let scores = decoderOutputs["iou_predictions"].flatMap { output in
+                try? floatValues(output)
+            } ?? []
+            // Candidate quality is considered only after the local tap
+            // neighborhood is inside that candidate. This prevents a broad,
+            // higher-confidence proposal from winning when the user tapped a
+            // small part next to it.
+            guard let selectedCandidate = MVDMaskSelection.candidate(
+                values: allMaskValues,
+                scores: scores,
+                width: maskWidth,
+                height: maskHeight,
+                count: candidateCount,
+                point: tapMaskPoint,
+                threshold: threshold
+            ) else {
+                print("MobileSAM: no candidate contains the tapped neighborhood")
+                return nil
             }
             let maskStart = selectedCandidate * planeSize
             let maskValues = Array(allMaskValues[maskStart..<min(maskStart + planeSize, allMaskValues.count)])
@@ -159,8 +230,7 @@ final class MVDMobileSAM {
                 maskWidth: maskWidth,
                 maskHeight: maskHeight,
                 source: sourceCGImage,
-                prep: prep,
-                tapMaskPoint: tapMaskPoint
+                prep: prep
             )
         } catch {
             print("MobileSAM inference error: \(error.localizedDescription)")
@@ -219,83 +289,29 @@ final class MVDMobileSAM {
         maskWidth: Int,
         maskHeight: Int,
         source: CGImage,
-        prep: Prep,
-        tapMaskPoint: CGPoint
+        prep: Prep
     ) -> UIImage? {
         let width = source.width
         let height = source.height
         guard !maskValues.isEmpty, let sourcePixels = rgbaBitmap(source, width: width, height: height) else { return nil }
         guard maskValues.count >= maskWidth * maskHeight else { return nil }
 
-        func maskValue(x: Int, y: Int) -> Float {
-            maskValues[y * maskWidth + x]
-        }
-
-        // MobileSAM can return small disconnected islands around a one-tap
-        // prompt, especially when the object occupies little of the photo.
-        // Keep only the foreground component that contains (or is nearest to)
-        // the actual tap. This prevents a generic mask from bringing along
-        // unrelated background regions while preserving the complete object.
-        let foreground = maskValues.map { $0 > threshold }
-        var visited = Array(repeating: false, count: maskWidth * maskHeight)
-        var bestComponent: [Int] = []
-        var bestDistance = CGFloat.greatestFiniteMagnitude
-        let tapX = min(max(tapMaskPoint.x, 0), CGFloat(maskWidth - 1))
-        let tapY = min(max(tapMaskPoint.y, 0), CGFloat(maskHeight - 1))
-        let neighbors = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]
-
-        for startY in 0..<maskHeight {
-            for startX in 0..<maskWidth {
-                let start = startY * maskWidth + startX
-                guard foreground[start], !visited[start] else { continue }
-                var queue = [start]
-                var component: [Int] = []
-                visited[start] = true
-                var head = 0
-                while head < queue.count {
-                    let index = queue[head]
-                    head += 1
-                    component.append(index)
-                    let x = index % maskWidth
-                    let y = index / maskWidth
-                    for (dx, dy) in neighbors {
-                        let nx = x + dx
-                        let ny = y + dy
-                        guard nx >= 0, nx < maskWidth, ny >= 0, ny < maskHeight else { continue }
-                        let next = ny * maskWidth + nx
-                        if foreground[next], !visited[next] {
-                            visited[next] = true
-                            queue.append(next)
-                        }
-                    }
-                }
-                let nearestDistance = component.reduce(CGFloat.greatestFiniteMagnitude) { current, index in
-                    let x = CGFloat(index % maskWidth)
-                    let y = CGFloat(index / maskWidth)
-                    return min(current, hypot(x - tapX, y - tapY))
-                }
-                // Prefer the component nearest the tap; for ties keep the
-                // larger component so all connected parts of the object stay.
-                if nearestDistance < bestDistance - 0.5 ||
-                    (abs(nearestDistance - bestDistance) <= 0.5 && component.count > bestComponent.count) {
-                    bestDistance = nearestDistance
-                    bestComponent = component
-                }
-            }
-        }
-        guard !bestComponent.isEmpty else { return nil }
-        let selected = Set(bestComponent)
+        // Keep the selected decoder proposal intact. MobileSAM can represent a
+        // mechanical assembly as several disconnected foreground islands; a
+        // nearest-component filter would keep only one wheel/roller and throw
+        // away the rest of the requested NLG assembly.
+        let selected = maskValues.map { $0 > threshold }
         var minX = maskWidth
         var minY = maskHeight
         var maxX = 0
         var maxY = 0
-        for index in bestComponent {
-            let x = index % maskWidth
-            let y = index / maskWidth
-            minX = min(minX, x)
-            minY = min(minY, y)
-            maxX = max(maxX, x)
-            maxY = max(maxY, y)
+        for y in 0..<maskHeight {
+            for x in 0..<maskWidth where selected[y * maskWidth + x] {
+                minX = min(minX, x)
+                minY = min(minY, y)
+                maxX = max(maxX, x)
+                maxY = max(maxY, y)
+            }
         }
         guard minX < maxX, minY < maxY else { return nil }
 
@@ -326,7 +342,7 @@ final class MVDMobileSAM {
                 let mx = min(max(Int(CGFloat(sourceX) * prep.scale) + prep.offsetX, 0), maskWidth - 1)
                 let my = min(max(Int(CGFloat(sourceY) * prep.scale) + prep.offsetY, 0), maskHeight - 1)
                 let destination = (y * outputWidth + x) * 4
-                if selected.contains(my * maskWidth + mx) {
+                if selected[my * maskWidth + mx] {
                     let sourceIndex = (sourceY * width + sourceX) * 4
                     output[destination] = sourcePixels[sourceIndex]
                     output[destination + 1] = sourcePixels[sourceIndex + 1]

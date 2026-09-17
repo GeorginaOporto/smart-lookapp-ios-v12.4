@@ -2069,25 +2069,37 @@ private struct VisionExtractionView: View {
             "zoom=\(String(format: "%.2f", zoomScale)) " +
             "pan=(\(String(format: "%.1f", panOffset.width)),\(String(format: "%.1f", panOffset.height)))"
         )
-        // Match Android: run MobileSAM on the complete normalized image and
-        // convert the normalized tap inside the model, preserving context
-        // around the selected part. A local crop can merge the tapped piece
-        // with adjacent foreground components.
+        // Run MobileSAM against the complete normalized image. Cropping a
+        // 52%-sized window around the tap made edge selections ambiguous: a
+        // part could be clipped by that temporary window and the model then
+        // had no context to distinguish it from a neighboring part. Passing
+        // the original image keeps the tap in the same coordinate system from
+        // the screen all the way through the model and final crop.
         DispatchQueue.global(qos: .userInitiated).async {
             let promptResult = autoreleasepool {
-                MVDMobileSAM.shared.extract(
+                MVDImageExtractor.extractTouchWindowWithMobileSAM(
                     visionImage,
                     normalizedPoint: point
                 )
             }
-            let fallbackResult = autoreleasepool {
-                MVDImageExtractor.extract(visionImage, normalizedPoint: point)
+            // Vision is an expensive fallback. Do not run it after MobileSAM
+            // already succeeded; doing both passes for every tap retained two
+            // large masks and could make a second attempt terminate the app.
+            let extracted: UIImage?
+            let usedVisionFallback: Bool
+            if let promptResult {
+                extracted = promptResult
+                usedVisionFallback = false
+            } else {
+                extracted = autoreleasepool {
+                    MVDImageExtractor.extract(visionImage, normalizedPoint: point)
+                }
+                usedVisionFallback = true
             }
-            let extracted = promptResult ?? fallbackResult
             DispatchQueue.main.async {
                 isProcessing = false
                 if let extracted {
-                    extractionMessage = promptResult == nil
+                    extractionMessage = usedVisionFallback
                         ? "Silhouette extracted with Vision fallback"
                         : "Silhouette extracted from the tapped component"
                     onAccept(extracted)
@@ -2165,6 +2177,16 @@ extension UIImage {
 }
 
 private enum MVDImageExtractor {
+    /// Runs MobileSAM on the complete image. Keeping the original image and
+    /// normalized point together avoids a second crop coordinate transform at
+    /// the edges of the displayed photo.
+    static func extractTouchWindowWithMobileSAM(_ image: UIImage, normalizedPoint: CGPoint) -> UIImage? {
+        return MVDMobileSAM.shared.extract(image.normalizedForVision(), normalizedPoint: CGPoint(
+            x: min(max(normalizedPoint.x, 0), 1),
+            y: min(max(normalizedPoint.y, 0), 1)
+        ))
+    }
+
     static func extract(_ image: UIImage, normalizedPoint: CGPoint?) -> UIImage? {
         guard #available(iOS 17.0, *), let sourceCGImage = image.cgImage else { return nil }
         var workingImage = image
