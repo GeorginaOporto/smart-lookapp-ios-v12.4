@@ -1949,6 +1949,101 @@ struct TrainingView: View {
     }
 }
 
+private struct MVDExtractionCanvas: UIViewRepresentable {
+    let image: UIImage
+    let zoomScale: CGFloat
+    let pan: CGSize
+    var onTapPixel: (CGPoint) -> Void
+
+    func makeUIView(context: Context) -> MVDExtractionCanvasView {
+        let view = MVDExtractionCanvasView()
+        view.image = image
+        view.zoomScale = zoomScale
+        view.panOffset = pan
+        view.onTapPixel = onTapPixel
+        return view
+    }
+
+    func updateUIView(_ uiView: MVDExtractionCanvasView, context: Context) {
+        uiView.image = image
+        uiView.zoomScale = zoomScale
+        uiView.panOffset = pan
+        uiView.onTapPixel = onTapPixel
+        uiView.setNeedsDisplay()
+    }
+}
+
+private final class MVDExtractionCanvasView: UIView {
+    var image: UIImage? { didSet { setNeedsDisplay() } }
+    var zoomScale: CGFloat = 1
+    var panOffset: CGSize = .zero
+    var onTapPixel: ((CGPoint) -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black
+        isUserInteractionEnabled = true
+        clipsToBounds = true
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap(_:))))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func fitRect(imageSize: CGSize) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              bounds.width > 0, bounds.height > 0 else { return .zero }
+        let scale = min(bounds.width / imageSize.width, bounds.height / imageSize.height)
+        let size = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        return CGRect(
+            x: (bounds.width - size.width) / 2,
+            y: (bounds.height - size.height) / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let image else { return }
+        let imageSize = CGSize(
+            width: image.cgImage?.width ?? Int(image.size.width * image.scale),
+            height: image.cgImage?.height ?? Int(image.size.height * image.scale)
+        )
+        let base = fitRect(imageSize: imageSize)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let scaled = CGRect(
+            x: center.x + (base.minX - center.x) * zoomScale + panOffset.width,
+            y: center.y + (base.minY - center.y) * zoomScale + panOffset.height,
+            width: base.width * zoomScale,
+            height: base.height * zoomScale
+        )
+        image.draw(in: scaled)
+    }
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        guard let image else { return }
+        let imageSize = CGSize(
+            width: image.cgImage?.width ?? Int(image.size.width * image.scale),
+            height: image.cgImage?.height ?? Int(image.size.height * image.scale)
+        )
+        guard imageSize.width > 0, imageSize.height > 0 else { return }
+        let base = fitRect(imageSize: imageSize)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let safeZoom = max(zoomScale, 0.0001)
+        let location = gesture.location(in: self)
+        let unzoomed = CGPoint(
+            x: center.x + (location.x - panOffset.width - center.x) / safeZoom,
+            y: center.y + (location.y - panOffset.height - center.y) / safeZoom
+        )
+        let localX = unzoomed.x - base.minX
+        let localY = unzoomed.y - base.minY
+        guard localX >= 0, localY >= 0, localX <= base.width, localY <= base.height else { return }
+        onTapPixel?(CGPoint(
+            x: min(max(localX / max(base.width, 1) * imageSize.width, 0), imageSize.width - 1),
+            y: min(max(localY / max(base.height, 1) * imageSize.height, 0), imageSize.height - 1)
+        ))
+    }
+}
+
 private struct VisionExtractionView: View {
     let image: UIImage
     let onAccept: (UIImage) -> Void
@@ -1972,7 +2067,7 @@ private struct VisionExtractionView: View {
                     // the whole container, while the image itself is
                     // letterboxed by scaledToFit; that made off-centre taps
                     // resolve to the wrong source pixel.
-                    MVDTappableImageView(
+                    MVDExtractionCanvas(
                         image: visionImage,
                         zoomScale: zoomScale,
                         pan: panOffset,
