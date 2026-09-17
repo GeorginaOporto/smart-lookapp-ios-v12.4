@@ -736,7 +736,12 @@ struct SearchView: View {
         }
         .sheet(isPresented: $showExtractor) {
             if let image = sourceImage {
-                VisionExtractionView(image: image) { cropped in
+                // Android v12.4 displays and segments the same safe bitmap,
+                // capped at 1024 px. Keeping one bitmap for both operations
+                // removes any full-resolution/display coordinate drift.
+                VisionExtractionView(
+                    image: image.normalizedForVision().downsampled(maxDimension: 1024)
+                ) { cropped in
                     extractedImage = cropped
                     imageStatus = "Piece extracted locally; SEARCH is ready"
                     showExtractor = false

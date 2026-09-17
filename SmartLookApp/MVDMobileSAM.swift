@@ -234,14 +234,16 @@ final class MVDMobileSAM {
                 outputNames: Set(decoderOutputNames),
                 runOptions: nil
             )
-            // Select by semantic output name. The order returned by ONNX
-            // Runtime is not a public contract; using `.first` can silently
-            // read IoU or low-resolution data as the actual mask.
-            guard let maskValue = decoderOutputs["masks"] else { return nil }
+            // Match Android v12.4 exactly: OrtSession.Result.get(0) is the
+            // mask tensor used for both the preview and the extracted piece.
+            // ORT's outputNames preserves the graph-output order represented
+            // by Result.get(index), so consume its first entry here as well.
+            guard let maskOutputName = decoderOutputNames.first,
+                  let maskValue = decoderOutputs[maskOutputName] else { return nil }
             let maskData = try maskValue.tensorData()
             let maskInfo = try maskValue.tensorTypeAndShapeInfo()
             let maskShape = maskInfo.shape.map { $0.intValue }
-            guard maskShape.count == 4, maskShape[0] == 1 else { return nil }
+            guard maskShape.count >= 2 else { return nil }
             let maskHeight = maskShape[maskShape.count - 2]
             let maskWidth = maskShape[maskShape.count - 1]
             guard maskWidth > 0,
@@ -252,48 +254,11 @@ final class MVDMobileSAM {
                 count: maskData.length / MemoryLayout<Float>.size
             ))
             let planeSize = maskWidth * maskHeight
-            let candidateCount = max(1, maskShape[1])
-            guard allMaskValues.count >= candidateCount * planeSize else { return nil }
-            let tapMaskPoint = CGPoint(
-                x: modelX * CGFloat(maskWidth) / CGFloat(inputSize),
-                y: modelY * CGFloat(maskHeight) / CGFloat(inputSize)
-            )
-            let scores = decoderOutputs["iou_predictions"].flatMap { output in
-                try? floatValues(output)
-            } ?? []
-            // Candidate quality is considered only after the local tap
-            // neighborhood is inside that candidate. This prevents a broad,
-            // higher-confidence proposal from winning when the user tapped a
-            // small part next to it.
-            guard let selectedCandidate = MVDMaskSelection.candidate(
-                values: allMaskValues,
-                scores: scores,
-                width: maskWidth,
-                height: maskHeight,
-                count: candidateCount,
-                point: tapMaskPoint,
-                threshold: threshold
-            ) else {
-                print("MobileSAM: no candidate contains the tapped neighborhood")
-                return nil
-            }
-            let maskStart = selectedCandidate * planeSize
-            let proposal = Array(allMaskValues[maskStart..<min(maskStart + planeSize, allMaskValues.count)])
-            guard proposal.count == planeSize else { return nil }
-            // A proposal can cover an entire mechanical assembly even when
-            // the user taps a small part inside it. Keep only the 8-connected
-            // foreground island containing the tap so a thin strap, roller,
-            // or wheel is not returned together with neighboring parts.
-            guard let maskValues = MVDMaskSelection.component(
-                values: proposal,
-                width: maskWidth,
-                height: maskHeight,
-                point: tapMaskPoint,
-                threshold: threshold
-            ) else {
-                print("MobileSAM: selected proposal has no connected component at the tap")
-                return nil
-            }
+            guard allMaskValues.count >= planeSize else { return nil }
+            // Android reads y * maskWidth + x directly from result.get(0),
+            // which is the first mask plane. Do not substitute a different
+            // proposal by IoU and do not post-filter connected components.
+            let maskValues = Array(allMaskValues[0..<planeSize])
             return render(
                 maskValues: maskValues,
                 maskWidth: maskWidth,
