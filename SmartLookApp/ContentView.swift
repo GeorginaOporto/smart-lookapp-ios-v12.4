@@ -759,6 +759,7 @@ struct SearchView: View {
     }
 
     private func clearSearch() {
+        store.resetSearchSessionFeedback()
         eicas = ""
         fim = ""
         maint = ""

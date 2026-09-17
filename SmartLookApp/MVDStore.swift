@@ -273,6 +273,8 @@ final class MVDLocalStore: ObservableObject {
     @Published private(set) var lastSearchEmbedding: [Double] = []
     @Published private(set) var searchFeedback: [String: Bool] = [:]
     private var pendingTrainingIDs: Set<String> = []
+    private var sessionNegativeTrainingIDs: Set<String> = []
+    private var lastImageQueryEmbedding: [Float] = []
     private var hasPreparedPrivateTraining = false
 
     init() {}
@@ -384,10 +386,13 @@ final class MVDLocalStore: ObservableObject {
     }
 
     private struct TrainingIndexCache: Codable {
+        let schemaVersion: Int
         let signature: String
         let training: [MVDTrainingPayload]
         let routes: [String: MVDTrainingRoute]
     }
+
+    private static let trainingIndexSchemaVersion = 2
 
     private var trainingCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -397,6 +402,7 @@ final class MVDLocalStore: ObservableObject {
     private func loadCachedTrainingIndex() -> (training: [MVDTrainingPayload], routes: [String: MVDTrainingRoute])? {
         guard let data = try? Data(contentsOf: trainingCacheURL),
               let cache = try? JSONDecoder().decode(TrainingIndexCache.self, from: data),
+              cache.schemaVersion == Self.trainingIndexSchemaVersion,
               cache.signature == trainingSourceSignature() else { return nil }
         return (cache.training, cache.routes)
     }
@@ -411,6 +417,7 @@ final class MVDLocalStore: ObservableObject {
 
     private func saveCachedTrainingIndex(_ snapshot: (training: [MVDTrainingPayload], routes: [String: MVDTrainingRoute])) {
         let cache = TrainingIndexCache(
+            schemaVersion: Self.trainingIndexSchemaVersion,
             signature: trainingSourceSignature(),
             training: snapshot.training,
             routes: snapshot.routes
@@ -458,6 +465,10 @@ final class MVDLocalStore: ObservableObject {
         pendingTrainingIDs.removeAll()
         func appendImported(_ original: MVDTrainingPayload, route: MVDTrainingRoute, pending: Bool = false) {
             var payload = original
+            // The physical CMM folder is authoritative. Reject exports whose
+            // internal document reference points at another CMM; otherwise a
+            // 25-02-67 record can pollute the exact 25-02-48 search scope.
+            guard cmmTrainingIsConsistent(payload, route: route) else { return }
             // Android libraries can reuse a recordId in different manual
             // folders, and some legacy JSON has no recordId at all. Keep
             // every imported record addressable so its folder route cannot
@@ -643,7 +654,7 @@ final class MVDLocalStore: ObservableObject {
                     root.appendingPathComponent("\(expectedManufacturer)/\(model)/\(expectedCustomer)", isDirectory: true)
                 ]
                 for base in directBases {
-                    for manualName in ["MaintMessage", "MaintenanceMessages"] {
+                    for manualName in ["MaintMessage"] {
                         let directory = base
                             .appendingPathComponent(manualName, isDirectory: true)
                             .appendingPathComponent(ataFolder, isDirectory: true)
@@ -661,7 +672,7 @@ final class MVDLocalStore: ObservableObject {
                 guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
                 let parts = url.pathComponents
                 let normalizedParts = parts.map(normalized)
-                guard normalizedParts.contains("MAINTMESSAGE") || normalizedParts.contains("MAINTENANCEMESSAGES") else { continue }
+                guard normalizedParts.contains("MAINTMESSAGE") else { continue }
                 guard normalizedParts.contains(normalized(ataFolder)) else { continue }
                 if !expectedModel.isEmpty && !normalizedParts.contains(expectedModel) { continue }
                 if !expectedCustomer.isEmpty && !normalizedParts.contains(expectedCustomer) { continue }
@@ -744,7 +755,7 @@ final class MVDLocalStore: ObservableObject {
         let components = url.pathComponents.map { $0.uppercased() }
         let knownNoses = Set(MVDLocalFleetCatalog.all.map { normalized($0.nose) })
         let nose = components.first(where: { knownNoses.contains(normalized($0)) }) ?? ""
-        let manualNames = ["AMM", "AIPC", "WDM", "FIM", "CMM", "MEL", "CDL", "NEF", "TAC", "SRM", "IFE", "AMSAFE", "EO", "SB", "EOSB", "EICAS", "FAULTCODES", "MAINTMESSAGE", "MAINTENANCEMESSAGES", "AARD200", "AARD300"]
+        let manualNames = ["AMM", "AIPC", "WDM", "FIM", "CMM", "MEL", "CDL", "NEF", "TAC", "SRM", "IFE", "AMSAFE", "EO", "SB", "EOSB", "EICAS", "FAULTCODES", "MAINTMESSAGE", "AARD200", "AARD300"]
         let manual = components.first(where: {
             let compact = $0.replacingOccurrences(of: "_", with: "").replacingOccurrences(of: "-", with: "")
             return manualNames.contains(compact)
@@ -758,7 +769,7 @@ final class MVDLocalStore: ObservableObject {
         let ataFolder = components.first(where: {
             $0.range(of: #"^ATA\d{2}$"#, options: .regularExpression) != nil
         }).map { "ATA\($0.suffix(2))" } ?? ""
-        return MVDTrainingRoute(customer: customer, manufacturer: manufacturer, model: model, nose: nose, manual: manual, cmmNumber: cmmNumber, ataFolder: ataFolder)
+        return MVDTrainingRoute(customer: customer, manufacturer: manufacturer, model: model, nose: nose, manual: manual, cmmNumber: cmmNumber, ataFolder: ataFolder, sourceFileName: url.lastPathComponent)
     }
 
     /// Android compares each JSON record with the real images in its
@@ -810,7 +821,7 @@ final class MVDLocalStore: ObservableObject {
         let e = normalized(eicas)
         let f = normalized(fim)
         let m = normalized(maint)
-        // Android routes MaintMessage/MaintenanceMessages independently of
+        // Android routes the single MaintMessage hierarchy independently of
         // the visible manual picker. Preserve that behavior on iOS.
         let selectedManual: String
         if !e.isEmpty { selectedManual = "EICAS" }
@@ -829,7 +840,7 @@ final class MVDLocalStore: ObservableObject {
             return matchesManual(item, route: route, wanted: selectedManual, cmmNumber: selectedCMM) &&
             matchesAircraft(item, route: route, expected: aircraft) &&
             matchesNose(item, route: route, wanted: selectedNose)
-            && (selectedCMM.isEmpty || normalized(item.cmmNumber) == selectedCMM || normalized(item.cmmNumber).isEmpty)
+            && (selectedCMM.isEmpty || normalized(route?.cmmNumber ?? item.cmmNumber) == selectedCMM)
         }
         if !e.isEmpty {
             return scoped.filter { normalized($0.eicasMessage).contains(e) }
@@ -881,16 +892,28 @@ final class MVDLocalStore: ObservableObject {
             matchesNose(item, route: route, wanted: wantedNose) &&
             (wantedCMM.isEmpty || normalized(item.cmmNumber) == wantedCMM || normalized(item.cmmNumber).isEmpty)
         }
-        return candidates.compactMap { item -> (Double, MVDTrainingPayload)? in
-            let best = item.imageEmbeddings.map { stored in
-                let contextScore = MVDOnnxEmbedding.cosine(contextQuery, stored)
-                guard let extractedQuery else { return contextScore }
-                let extractedScore = MVDOnnxEmbedding.cosine(extractedQuery, stored)
-                return MVDVisualSearchFormula.contextWeight * contextScore + MVDVisualSearchFormula.extractedWeight * extractedScore
-            }.max() ?? 0
-            guard best > 0 else { return nil }
+        let query = extractedQuery ?? contextQuery
+        lastImageQueryEmbedding = query
+        let ranked = candidates.compactMap { item -> (Double, MVDTrainingPayload)? in
+            let best = item.imageEmbeddings.map { stored -> Double in
+                let contextDistance = (1.0 - MVDOnnxEmbedding.cosine(contextQuery, stored)) * 100.0
+                let visualDistance: Double
+                if let extractedQuery {
+                    let extractedDistance = (1.0 - MVDOnnxEmbedding.cosine(extractedQuery, stored)) * 100.0
+                    visualDistance = MVDVisualSearchFormula.combinedVisualDistance(context: contextDistance, extracted: extractedDistance)
+                } else {
+                    visualDistance = contextDistance
+                }
+                // Android's final rank is a weighted legacy visual distance
+                // plus the MobileNet embedding distance. The same stored
+                // 1280-vector is used for both the query and the training ref.
+                let embeddingDistance = (1.0 - MVDOnnxEmbedding.cosine(query, stored)) * 100.0
+                return MVDVisualSearchFormula.finalDistance(visual: visualDistance, embedding: embeddingDistance)
+            }.min() ?? .infinity
+            guard best.isFinite, best < 60, !sessionNegativeTrainingIDs.contains(item.id) else { return nil }
             return (best, item)
-        }.sorted { $0.0 > $1.0 }.prefix(10).map(\.1)
+        }
+        return ranked.sorted { $0.0 < $1.0 }.prefix(10).map(\.1)
     }
 
     func hasTraining(for manual: String, nose: String) -> Bool {
@@ -978,6 +1001,24 @@ final class MVDLocalStore: ObservableObject {
         return itemCMM.isEmpty
     }
 
+    private func cmmTrainingIsConsistent(_ item: MVDTrainingPayload, route: MVDTrainingRoute) -> Bool {
+        guard normalizedManual(route.manual) == "CMM", !route.cmmNumber.isEmpty else { return true }
+        let expected = normalized(route.cmmNumber)
+        let values = [item.partName, item.description, item.pinpointLink,
+                      item.trainingProcedureLink, item.checkLink]
+        for value in values {
+            let upper = value.uppercased()
+            let ns = NSRange(upper.startIndex..<upper.endIndex, in: upper)
+            guard let regex = try? NSRegularExpression(pattern: #"CMM\s*\d{2}\s*[-']?\s*\d{2}\s*[-']?\s*\d{2}"#) else { continue }
+            for match in regex.matches(in: upper, range: ns) {
+                guard let range = Range(match.range, in: upper) else { continue }
+                let found = normalized(String(upper[range]).replacingOccurrences(of: "CMM", with: ""))
+                if found != expected { return false }
+            }
+        }
+        return true
+    }
+
     private func aircraftForNose(_ nose: String) -> MVDFleetAircraft? {
         let catalog = MVDLocalFleetCatalog.load()
         return catalog.first { normalized($0.nose) == normalized(nose) }
@@ -1015,7 +1056,7 @@ final class MVDLocalStore: ObservableObject {
     /// Some Android exports retain a stale manualType in JSON while the
     /// imageFiles still contain the authoritative TrainingData route.
     private func inferredManual(for item: MVDTrainingPayload) -> String {
-        let names = ["AMM", "AIPC", "WDM", "FIM", "CMM", "MEL", "CDL", "NEF", "TAC", "SRM", "IFE", "AMSAFE", "EO", "SB", "EOSB", "EICAS", "FAULTCODES", "MAINTMESSAGE", "MAINTENANCEMESSAGES", "AARD-200", "AARD-300"]
+        let names = ["AMM", "AIPC", "WDM", "FIM", "CMM", "MEL", "CDL", "NEF", "TAC", "SRM", "IFE", "AMSAFE", "EO", "SB", "EOSB", "EICAS", "FAULTCODES", "MAINTMESSAGE", "AARD-200", "AARD-300"]
         for raw in item.imageFiles {
             let components = raw.replacingOccurrences(of: "\\", with: "/")
                 .split(separator: "/").map(String.init)
@@ -1041,7 +1082,7 @@ final class MVDLocalStore: ObservableObject {
     private func normalizedManual(_ value: String) -> String {
         let compact = value.uppercased().filter { $0.isLetter || $0.isNumber }
         switch compact {
-        case "MAINTENANCEMESSAGES", "MAINTMESSAGE", "MAINTMSG", "MAINTENANCE": return "MAINT"
+        case "MAINTMESSAGE", "MAINTMSG", "MAINTENANCE": return "MAINT"
         case "FAULTCODES", "FAULTCODE": return "FIM"
         case "EICAS": return "EICAS"
         case "EO", "SB", "EOSB": return "EOSB"
@@ -1064,18 +1105,49 @@ final class MVDLocalStore: ObservableObject {
     }
 
     func registerSearchFeedback(for payload: MVDTrainingPayload, positive: Bool) {
-        let fields = [payload.eicasMessage, payload.faultCode, payload.matMessage,
-                      payload.partName, payload.ataChapter, payload.description]
-        lastSearchEmbedding = MVDLocalEmbedding.vector(for: fields.joined(separator: " "))
         searchFeedback[payload.id] = positive
-        let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("SearchFeedback", isDirectory: true)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let record: [String: Any] = ["recordId": payload.id, "positive": positive,
-                                     "embedding": lastSearchEmbedding]
-        if let data = try? JSONSerialization.data(withJSONObject: record) {
-            try? data.write(to: folder.appendingPathComponent("\(payload.id).json"), options: .atomic)
+        if positive {
+            persistAndroidPositiveFeedback(for: payload, embedding: lastImageQueryEmbedding)
+        } else {
+            // Android 👎 is intentionally session-only. It changes the next
+            // result without poisoning future users or the shared index.
+            sessionNegativeTrainingIDs.insert(payload.id)
         }
+    }
+
+    func resetSearchSessionFeedback() {
+        sessionNegativeTrainingIDs.removeAll()
+        searchFeedback.removeAll()
+        lastImageQueryEmbedding.removeAll()
+    }
+
+    private func persistAndroidPositiveFeedback(for payload: MVDTrainingPayload, embedding: [Float]) {
+        guard let route = routeByTrainingID[payload.id], !route.sourceFileName.isEmpty else { return }
+        let manualFolder = trainingFolder(for: route)
+        try? FileManager.default.createDirectory(at: manualFolder, withIntermediateDirectories: true)
+        let feedbackURL = manualFolder.appendingPathComponent("_feedback.json")
+        var counts = (try? JSONDecoder().decode([String: Int].self, from: Data(contentsOf: feedbackURL))) ?? [:]
+        counts[route.sourceFileName, default: 0] += 1
+        if let data = try? JSONEncoder().encode(counts) { try? data.write(to: feedbackURL, options: .atomic) }
+        guard !embedding.isEmpty else { return }
+        let record: [String: Any] = ["fileName": route.sourceFileName, "embedding": embedding]
+        guard let data = try? JSONSerialization.data(withJSONObject: record) else { return }
+        let logURL = manualFolder.appendingPathComponent("_positive_embeddings.jsonl")
+        if let handle = try? FileHandle(forWritingTo: logURL) {
+            handle.seekToEndOfFile(); handle.write(data); handle.write(Data([10])); try? handle.close()
+        } else { try? (data + Data([10])).write(to: logURL, options: .atomic) }
+    }
+
+    private func trainingFolder(for route: MVDTrainingRoute) -> URL {
+        let root = privateTrainingRoots().first ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("TrainingData")
+        var result = root.appendingPathComponent(route.customer).appendingPathComponent(route.manufacturer).appendingPathComponent(route.model)
+        if normalizedManual(route.manual) == "CMM" {
+            return root.appendingPathComponent(route.customer)
+                .appendingPathComponent(route.manufacturer)
+                .appendingPathComponent("CMM")
+                .appendingPathComponent("cmm\(route.cmmNumber)")
+        }
+        return result.appendingPathComponent(route.manual)
     }
 
     private func relevance(of item: MVDTrainingPayload, eicas: String, fim: String, maint: String) -> Int {
@@ -1118,20 +1190,7 @@ final class MVDLocalStore: ObservableObject {
     /// put a shared CMM inside an aircraft model folder.
     func downloadTrainingLibrary(customer: String, manufacturer: String, model: String,
                                  completion: @escaping (String) -> Void) {
-        guard !isPreparing else {
-            // Installing one archive refreshes the local index. When this
-            // method belongs to a multi-library queue, wait for that refresh
-            // instead of aborting the remaining model/CMM downloads.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.downloadTrainingLibrary(
-                    customer: customer,
-                    manufacturer: manufacturer,
-                    model: model,
-                    completion: completion
-                )
-            }
-            return
-        }
+        guard !isPreparing else { completion("TRAINING INDEX BUSY"); return }
         let encodedCustomer = customer.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? customer
         let encodedManufacturer = manufacturer.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? manufacturer
         let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
@@ -1152,7 +1211,7 @@ final class MVDLocalStore: ObservableObject {
             }.resume()
             semaphore.wait()
             guard let downloadedURL, (200..<300).contains(statusCode) else {
-                DispatchQueue.main.async { completion("TRAINING DOWNLOAD FAILED (\(statusCode)) — \(manufacturer)/\(model)") }
+                DispatchQueue.main.async { completion("TRAINING DOWNLOAD FAILED (\(statusCode))") }
                 return
             }
             let destination = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -1192,7 +1251,7 @@ final class MVDLocalStore: ObservableObject {
             return parts.manufacturer
         })
         for manufacturer in manufacturers {
-            let cmmKey = "\(manufacturer)/CMM"
+            let cmmKey = "(manufacturer)/CMM"
             if unique[cmmKey] == nil {
                 unique[cmmKey] = MVDLibraryOption(
                     key: cmmKey,
@@ -1329,11 +1388,6 @@ private enum MVDTrainingArchiveInstaller {
             let outputPath = output.standardizedFileURL.path
             guard outputPath == rootPath || outputPath.hasPrefix(rootPath + "/") else { continue }
             try fileManager.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
-            // A stale model ZIP may still contain a legacy nested CMM. Replace
-            // duplicate paths so the dedicated shared CMM archive wins.
-            if fileManager.fileExists(atPath: output.path) {
-                try fileManager.removeItem(at: output)
-            }
             _ = try archive.extract(entry, to: output)
         }
     }
@@ -1521,6 +1575,7 @@ private struct MVDTrainingRoute: Codable {
     let manual: String
     let cmmNumber: String
     let ataFolder: String
+    let sourceFileName: String
 }
 
 /// Small offline vector fingerprint used until a Core ML embedding model is added.
