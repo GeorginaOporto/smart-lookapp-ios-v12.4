@@ -404,6 +404,19 @@ final class MVDMobileSAM {
         )
     }
 
+    /// Copy an ONNX tensor while its runtime-owned buffer is still valid.
+    private func floatValues(_ value: ORTValue) throws -> [Float] {
+        let data = try value.tensorData()
+        guard data.length % MemoryLayout<Float>.size == 0 else { return [] }
+        var result = [Float](repeating: 0, count: data.length / MemoryLayout<Float>.size)
+        result.withUnsafeMutableBytes { bytes in
+            if let destination = bytes.baseAddress {
+                data.getBytes(destination, length: bytes.count)
+            }
+        }
+        return result
+    }
+
     private func rgbaBitmap(_ image: CGImage, width: Int, height: Int) -> [UInt8]? {
         guard let context = CGContext(
             data: nil,
