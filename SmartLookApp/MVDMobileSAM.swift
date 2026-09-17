@@ -67,6 +67,61 @@ private enum MVDMaskSelection {
         }
         return best?.index
     }
+
+    /// Isolate the foreground island containing the positive tap. This is
+    /// performed after decoder-proposal selection so a broad mask cannot
+    /// return adjacent mechanical parts that were not touched.
+    static func component(
+        values: [Float],
+        width: Int,
+        height: Int,
+        point: CGPoint,
+        threshold: Float
+    ) -> [Float]? {
+        guard width > 0, height > 0, values.count == width * height,
+              point.x.isFinite, point.y.isFinite else { return nil }
+
+        let centerX = min(max(Int(point.x.rounded()), 0), width - 1)
+        let centerY = min(max(Int(point.y.rounded()), 0), height - 1)
+        let radius = max(2, min(12, Int((CGFloat(min(width, height)) * 0.008).rounded())))
+        var seed: Int?
+        var nearestDistance = CGFloat.greatestFiniteMagnitude
+        for y in max(0, centerY - radius)...min(height - 1, centerY + radius) {
+            for x in max(0, centerX - radius)...min(width - 1, centerX + radius) {
+                guard values[y * width + x] > threshold else { continue }
+                let distance = hypot(CGFloat(x - centerX), CGFloat(y - centerY))
+                guard distance <= CGFloat(radius), distance < nearestDistance else { continue }
+                nearestDistance = distance
+                seed = y * width + x
+            }
+        }
+        guard let seed else { return nil }
+
+        var result = [Float](repeating: 0, count: values.count)
+        var queue = [Int32(seed)]
+        result[seed] = 1
+        var head = 0
+        while head < queue.count {
+            let index = Int(queue[head])
+            head += 1
+            let x = index % width
+            let y = index / width
+
+            for dy in -1...1 {
+                for dx in -1...1 where dx != 0 || dy != 0 {
+                    let nx = x + dx
+                    let ny = y + dy
+                    guard nx >= 0, nx < width, ny >= 0, ny < height else { continue }
+                    let next = ny * width + nx
+                    if result[next] == 0, values[next] > threshold {
+                        result[next] = 1
+                        queue.append(Int32(next))
+                    }
+                }
+            }
+        }
+        return result
+    }
 }
 
 /// MobileSAM promptable segmenter. This is the iOS counterpart of Android's
@@ -223,8 +278,22 @@ final class MVDMobileSAM {
                 return nil
             }
             let maskStart = selectedCandidate * planeSize
-            let maskValues = Array(allMaskValues[maskStart..<min(maskStart + planeSize, allMaskValues.count)])
-            guard maskValues.count == planeSize else { return nil }
+            let proposal = Array(allMaskValues[maskStart..<min(maskStart + planeSize, allMaskValues.count)])
+            guard proposal.count == planeSize else { return nil }
+            // A proposal can cover an entire mechanical assembly even when
+            // the user taps a small part inside it. Keep only the 8-connected
+            // foreground island containing the tap so a thin strap, roller,
+            // or wheel is not returned together with neighboring parts.
+            guard let maskValues = MVDMaskSelection.component(
+                values: proposal,
+                width: maskWidth,
+                height: maskHeight,
+                point: tapMaskPoint,
+                threshold: threshold
+            ) else {
+                print("MobileSAM: selected proposal has no connected component at the tap")
+                return nil
+            }
             return render(
                 maskValues: maskValues,
                 maskWidth: maskWidth,
