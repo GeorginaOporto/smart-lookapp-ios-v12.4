@@ -24,34 +24,12 @@ struct MVDSession {
 }
 
 private struct MVDLogo: View {
-    private var logoImage: UIImage? {
-        // Login and the header must use the same catalogued asset as the app
-        // icon family. The old loose PNG resource is malformed on the Xcode
-        // build runner and can make UIImage(contentsOfFile:) return nil.
-        UIImage(named: "SmartLookAppLogo", in: Bundle.main, compatibleWith: nil)
-            ?? Bundle.main.url(forResource: "SmartLookAppLogo-v12.4", withExtension: "png")
-                .flatMap { UIImage(contentsOfFile: $0.path) }
-    }
-
     var body: some View {
-        Group {
-            if let logoImage {
-                Image(uiImage: logoImage)
-                    .resizable()
-                    // Keep a square layout contract. Using an unconstrained
-                    // maxHeight here lets the surrounding VStack give the
-                    // image only its first raster rows on iPad, which made
-                    // login and the search header appear vertically cut off.
-                    .aspectRatio(1, contentMode: .fit)
-                    .frame(maxWidth: .infinity)
-                    .clipped()
-            } else {
-                Image(systemName: "airplane.circle.fill")
-                    .resizable()
-                    .scaledToFit()
-                    .foregroundStyle(.blue)
-            }
-        }
+        Image("SmartLookAppLogo")
+            .resizable()
+            .scaledToFit()
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.18)))
         .accessibilityLabel("Smart LookApp")
     }
 }
@@ -2765,4 +2743,3 @@ private enum MVDTheme {
 }
 
 #Preview { ContentView() }
-
