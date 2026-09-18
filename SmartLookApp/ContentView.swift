@@ -29,6 +29,8 @@ private struct MVDLogo: View {
         // icon family. The old loose PNG resource is malformed on the Xcode
         // build runner and can make UIImage(contentsOfFile:) return nil.
         UIImage(named: "SmartLookAppLogo", in: Bundle.main, compatibleWith: nil)
+            ?? Bundle.main.url(forResource: "SmartLookAppLogo-v12.4", withExtension: "png")
+                .flatMap { UIImage(contentsOfFile: $0.path) }
     }
 
     var body: some View {

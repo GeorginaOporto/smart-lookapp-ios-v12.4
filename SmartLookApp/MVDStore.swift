@@ -1198,18 +1198,32 @@ final class MVDLocalStore: ObservableObject {
             completion("INVALID DOWNLOAD URL")
             return
         }
+        let alternateURL = URL(string: "http://100.109.229.98:5050/fleet-download/\(encodedCustomer)/\(encodedManufacturer)/\(encodedModel).zip")
         completion("DOWNLOADING \(model) TRAINING…")
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let semaphore = DispatchSemaphore(value: 0)
             var downloadedURL: URL?
             var statusCode = 0
-            URLSession.shared.downloadTask(with: url) { location, response, _ in
-                downloadedURL = location
-                statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-                semaphore.signal()
-            }.resume()
-            semaphore.wait()
+            // Some running server instances still expose the legacy .zip
+            // route while the current route omits the suffix. Try both and
+            // retry transient ZIP-generation failures before reporting the
+            // error to the user.
+            for attempt in 0..<3 where downloadedURL == nil {
+                for candidate in [url, alternateURL].compactMap({ $0 }) {
+                    let semaphore = DispatchSemaphore(value: 0)
+                    URLSession.shared.downloadTask(with: candidate) { location, response, _ in
+                        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                        statusCode = code
+                        if let location, (200..<300).contains(code) { downloadedURL = location }
+                        semaphore.signal()
+                    }.resume()
+                    semaphore.wait()
+                    if downloadedURL != nil { break }
+                }
+                if downloadedURL == nil && attempt < 2 {
+                    Thread.sleep(forTimeInterval: 1.0)
+                }
+            }
             guard let downloadedURL, (200..<300).contains(statusCode) else {
                 DispatchQueue.main.async { completion("TRAINING DOWNLOAD FAILED (\(statusCode))") }
                 return
