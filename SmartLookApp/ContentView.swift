@@ -1947,6 +1947,26 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
               report('Review Important Attachments and press I Acknowledge. Your match page remains saved.');
               return;
             }
+            // Pinpoint first renders the IPC Addendum as an HTML shell (welcome/tree/TOC).
+            // It is not PDF.js yet, so waiting only for PDFViewerApplication leaves the flow on page 0.
+            if (phase === 'preflight') {
+              const portalText = frames.map(w => {
+                try { return normalize((w.document.title || '') + ' ' + (w.document.body ? w.document.body.innerText || '' : '')); }
+                catch (_) { return ''; }
+              }).join(' ');
+              const ipcShellReady = portalText.includes('b777-200 ipc addendum')
+                && (portalText.includes('welcome to pinpoint')
+                    || portalText.includes('table of content')
+                    || portalText.includes('b777-200 ipc addendum.pdf'));
+              if (ipcShellReady) {
+                if (!readySince) { readySince = Date.now(); report('B777-200 IPC Addendum loaded. Checking Important Attachments…'); return; }
+                if (Date.now() - readySince < 1500) return;
+                phase = 'cmm';
+                navigate(goal.route);
+                report('Opening selected CMM…');
+                return;
+              }
+            }
             const expected = normalize(phase === 'preflight' ? 'B777-200 IPC Addendum' : goal.title);
             const viewer = frames.map(w => {
               const app = w.PDFViewerApplication;
