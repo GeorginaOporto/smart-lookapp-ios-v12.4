@@ -1228,28 +1228,10 @@ struct SearchResult: View {
     }
 
     private func openDocument(_ url: URL, title: String) {
-        documentTarget = MVDDocumentTarget(title: title, url: normalizedDocumentURL(url), context: documentContext(for: url))
-    }
-
-    /// Flatirons CMM links contain a second URL in PDF.js' `file` query
-    /// parameter. The server currently leaves the inner `?versiontype=...`
-    /// unescaped, so PDF.js receives a truncated file URL and remains at 0/0.
-    /// Rebuild the outer URL with the complete inner URL encoded as one value.
-    private func normalizedDocumentURL(_ url: URL) -> URL {
-        guard displayedManual.caseInsensitiveCompare("CMM") == .orderedSame,
-              var outer = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let fileItem = outer.queryItems?.first(where: { $0.name.caseInsensitiveCompare("file") == .orderedSame }),
-              let encodedFile = fileItem.value,
-              let decodedFile = encodedFile.removingPercentEncoding,
-              var inner = URLComponents(string: decodedFile),
-              inner.scheme != nil,
-              inner.host != nil else { return url }
-        outer.queryItems = outer.queryItems?.map { item in
-            item.name.caseInsensitiveCompare("file") == .orderedSame
-                ? URLQueryItem(name: item.name, value: inner.string ?? decodedFile)
-                : item
-        }
-        return outer.url ?? url
+        // Flatirons CMM links contain a nested PDF.js `file` URL. Preserve
+        // the exact URL stored in the training JSON so the portal can show
+        // its supplement acknowledgement before resolving the final page.
+        documentTarget = MVDDocumentTarget(title: title, url: url, context: documentContext(for: url))
     }
 
     @ViewBuilder
