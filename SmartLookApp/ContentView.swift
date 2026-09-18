@@ -1231,7 +1231,19 @@ struct SearchResult: View {
         // Flatirons CMM links contain a nested PDF.js `file` URL. Preserve
         // the exact URL stored in the training JSON so the portal can show
         // its supplement acknowledgement before resolving the final page.
-        documentTarget = MVDDocumentTarget(title: title, url: url, context: documentContext(for: url))
+        let portalURL = cmmPortalTestURL(for: url) ?? url
+        documentTarget = MVDDocumentTarget(title: title, url: portalURL, context: documentContext(for: url))
+    }
+
+    /// Temporary portal-route probe for the CMM that exposed the supplement
+    /// acknowledgement flow. The JSON currently stores PDF.js links, while
+    /// this route opens Flatirons' document shell first.
+    private func cmmPortalTestURL(for url: URL) -> URL? {
+        guard displayedManual.caseInsensitiveCompare("CMM") == .orderedSame,
+              url.absoluteString.localizedCaseInsensitiveContains("25-25-71") else {
+            return nil
+        }
+        return URL(string: "https://aa.flatironscloud.com/pinpoint/#/main/goto?library=f7c4714c-8295-47b6-aa3e-8c959a8cb5ce&publicationID=b5aaf261-fdfd-4928-ab3b-f158c226a58c&documentID=1387798187__BE%20AEROSPACE%2025-25-71&revision=2&documentTitle=BE%20AEROSPACE%2025-25-71.pdf&newViewer=true")
     }
 
     @ViewBuilder
