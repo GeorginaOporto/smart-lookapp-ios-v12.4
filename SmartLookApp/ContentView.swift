@@ -1243,7 +1243,9 @@ struct SearchResult: View {
               url.absoluteString.localizedCaseInsensitiveContains("25-25-71") else {
             return nil
         }
-        return URL(string: "https://aa.flatironscloud.com/pinpoint/#/main/goto?library=f7c4714c-8295-47b6-aa3e-8c959a8cb5ce&publicationID=b5aaf261-fdfd-4928-ab3b-f158c226a58c&documentID=1387798187__BE%20AEROSPACE%2025-25-71&revision=2&documentTitle=BE%20AEROSPACE%2025-25-71.pdf&newViewer=true")
+        // Do not pass newViewer=true: it jumps straight into PDF.js and
+        // bypasses the portal's Important Attachments acknowledgement.
+        return URL(string: "https://aa.flatironscloud.com/pinpoint/#/main/goto?library=f7c4714c-8295-47b6-aa3e-8c959a8cb5ce&publicationID=b5aaf261-fdfd-4928-ab3b-f158c226a58c&documentID=1387798187__BE%20AEROSPACE%2025-25-71&revision=2&documentTitle=BE%20AEROSPACE%2025-25-71.pdf")
     }
 
     @ViewBuilder
