@@ -1231,8 +1231,13 @@ struct SearchResult: View {
         // Flatirons CMM links contain a nested PDF.js `file` URL. Preserve
         // the exact URL stored in the training JSON so the portal can show
         // its supplement acknowledgement before resolving the final page.
-        let portalURL = cmmPortalTestURL(for: url) ?? url
-        documentTarget = MVDDocumentTarget(title: title, url: portalURL, context: documentContext(for: url))
+        let portalURL = cmmPortalTestURL(for: url)
+        documentTarget = MVDDocumentTarget(
+            title: title,
+            url: portalURL ?? url,
+            finalURL: portalURL == nil ? nil : url,
+            context: documentContext(for: url)
+        )
     }
 
     /// Temporary portal-route probe for the CMM that exposed the supplement
@@ -1389,6 +1394,7 @@ private struct MVDDocumentTarget: Identifiable {
     let id = UUID()
     let title: String
     let url: URL
+    let finalURL: URL?
     let context: MVDDocumentContext
 }
 
@@ -1410,6 +1416,7 @@ private struct MVDDocumentBrowser: View {
     @State private var scanRequestID: UUID?
     @State private var pageJumpRequest: MVDPageJumpRequest?
     @State private var portalLoginCompleted = false
+    @State private var supplementsAcknowledged = false
 
     private var isCMM: Bool {
         target.context.manualType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "CMM"
@@ -1467,7 +1474,9 @@ private struct MVDDocumentBrowser: View {
                     // only cookies; opening a second web view can therefore
                     // authenticate successfully but leave CMM at 0/0.
                     MVDDocumentWebView(
-                        url: portalLoginCompleted ? target.url : portalAuthenticationURL,
+                        url: portalLoginCompleted
+                            ? (supplementsAcknowledged ? (target.finalURL ?? target.url) : target.url)
+                            : portalAuthenticationURL,
                         scanRequestID: nil,
                         pageJumpRequest: nil,
                         onStateChange: { loading, title, text in
@@ -1507,6 +1516,35 @@ private struct MVDDocumentBrowser: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.orange)
+                    }
+                    .padding(.horizontal, 10)
+                }
+
+                if portalLoginCompleted, let finalURL = target.finalURL, !supplementsAcknowledged {
+                    VStack(spacing: 6) {
+                        Text("SUPPLEMENTS ACKNOWLEDGEMENT REQUIRED")
+                            .font(.caption.weight(.black))
+                            .foregroundStyle(.orange)
+                        Text("Press I Acknowledge in the portal above. Then open the exact match page.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button {
+                            supplementsAcknowledged = true
+                            isLoading = true
+                            loadedTitle = ""
+                            documentText = ""
+                        } label: {
+                            Label("OPEN MATCH PAGE", systemImage: "arrow.right.doc.on.clipboard")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
+                        .accessibilityHint("Opens the CMM page after acknowledging supplements")
+                        Text(finalURL.absoluteString)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                     .padding(.horizontal, 10)
                 }
