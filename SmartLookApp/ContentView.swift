@@ -1488,41 +1488,23 @@ private struct MVDDocumentBrowser: View {
                 .padding(.horizontal, 10)
 
                 ZStack {
-                    // Keep this web view alive after sign-in. Its default
-                    // website data store retains the portal cookies while the
-                    // document web view is opened above it.
+                    // Keep one WKWebView for both sign-in and the document.
+                    // Flatirons PDF.js also uses in-page/session state, not
+                    // only cookies; opening a second web view can therefore
+                    // authenticate successfully but leave CMM at 0/0.
                     MVDDocumentWebView(
-                        url: portalAuthenticationURL,
+                        url: portalLoginCompleted ? target.url : portalAuthenticationURL,
                         scanRequestID: nil,
                         pageJumpRequest: nil,
                         onStateChange: { loading, title, text in
-                            if !portalLoginCompleted {
-                                isLoading = loading
-                                loadedTitle = title
-                                documentText = text
-                            }
+                            isLoading = loading
+                            loadedTitle = title
+                            documentText = text
+                            MVDDocumentSession.shared.update(context: target.context, text: text)
                         }
                     )
-                    .opacity(portalLoginCompleted ? 0 : 1)
-                    .allowsHitTesting(!portalLoginCompleted)
-                    .accessibilityHidden(portalLoginCompleted)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(.blue.opacity(0.55)))
-                    if portalLoginCompleted {
-                        MVDDocumentWebView(
-                            url: target.url,
-                            scanRequestID: scanRequestID,
-                            pageJumpRequest: pageJumpRequest,
-                            onStateChange: { loading, title, text in
-                                isLoading = loading
-                                loadedTitle = title
-                                documentText = text
-                                MVDDocumentSession.shared.update(context: target.context, text: text)
-                            }
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.blue.opacity(0.55)))
-                    }
                     if isLoading {
                         ProgressView("Loading document…")
                             .padding(12)
@@ -1639,6 +1621,7 @@ private struct MVDDocumentWebView: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
+        context.coordinator.lastLoadedURL = url
         var request = URLRequest(url: url)
         if url.host?.caseInsensitiveCompare("aa.flatironscloud.com") == .orderedSame {
             request.setValue("https://aa.flatironscloud.com/", forHTTPHeaderField: "Referer")
@@ -1649,6 +1632,15 @@ private struct MVDDocumentWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
+        if context.coordinator.lastLoadedURL != url {
+            context.coordinator.lastLoadedURL = url
+            var request = URLRequest(url: url)
+            if url.host?.caseInsensitiveCompare("aa.flatironscloud.com") == .orderedSame {
+                request.setValue("https://aa.flatironscloud.com/", forHTTPHeaderField: "Referer")
+                request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+            }
+            webView.load(request)
+        }
         if let scanRequestID, context.coordinator.lastScanRequestID != scanRequestID {
             context.coordinator.lastScanRequestID = scanRequestID
             context.coordinator.scanNextPages(in: webView, limit: 51)
@@ -1663,6 +1655,7 @@ private struct MVDDocumentWebView: UIViewRepresentable {
         let onStateChange: (Bool, String, String) -> Void
         var lastScanRequestID: UUID?
         var lastPageJumpID: UUID?
+        var lastLoadedURL: URL?
 
         init(onStateChange: @escaping (Bool, String, String) -> Void) {
             self.onStateChange = onStateChange
