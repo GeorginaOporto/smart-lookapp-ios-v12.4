@@ -1881,7 +1881,7 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
             ? "https://aa.flatironscloud.com/pinpoint/#/main/goto?library=c9c65771-2510-4b78-96a3-1791f5bcf558&publicationID=2afe588a-13ca-4d0b-9c94-27b31261e099&documentID=2102982549__B777-200%20IPC%20Addendum&revision=61&documentTitle=B777-200%20IPC%20Addendum.pdf&newViewer=true"
             : ""
         let values: [String: Any] = ["route": route, "preflight": preflight, "page": page,
-                                     "title": publication, "cmm": cmm]
+                                     "title": publication, "cmm": cmm, "matchURL": original]
         let data = (try? JSONSerialization.data(withJSONObject: values)) ?? Data()
         return String(data: data, encoding: .utf8) ?? "{}"
     }
@@ -1898,7 +1898,7 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
           if (location.hostname !== 'aa.flatironscloud.com' || window !== window.top) return;
           const goal = \(configurationJSON);
           let phase = 'start', navigationAt = Date.now(), completed = false;
-          let lastStatus = '', readySince = 0;
+          let lastStatus = '', readySince = 0, finalNavigationStarted = false;
           const report = text => {
             if (text === lastStatus) return;
             lastStatus = text;
@@ -1946,6 +1946,24 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
               readySince = 0;
               report('Review Important Attachments and press I Acknowledge. Your match page remains saved.');
               return;
+            }
+            // Acceptance is the hand-off point. Explicitly load the trained
+            // JSON web link after the Knowledge layer disappears; relying on
+            // Pinpoint's internal selection can leave the CMM viewer at page 0.
+            if (phase === 'cmm' && !finalNavigationStarted && goal.matchURL) {
+              const cmmShellReady = frames.some(w => {
+                try {
+                  const text = normalize((w.document.title || '') + ' '
+                    + (w.document.body ? w.document.body.innerText || '' : ''));
+                  return text.includes(normalize(goal.cmm)) || text.includes(normalize(goal.title));
+                } catch (_) { return false; }
+              });
+              if (cmmShellReady) {
+                finalNavigationStarted = true;
+                navigate(goal.matchURL);
+                report('Knowledge accepted. Opening the trained match page…');
+                return;
+              }
             }
             // Pinpoint first renders the IPC Addendum as an HTML shell (welcome/tree/TOC).
             // It is not PDF.js yet, so waiting only for PDFViewerApplication leaves the flow on page 0.
