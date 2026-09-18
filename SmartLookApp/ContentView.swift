@@ -1830,16 +1830,41 @@ private struct MVDDocumentWebView: UIViewRepresentable {
 private struct MVDCMMPortalView: View {
     let target: MVDDocumentTarget
     @State private var status = "Sign in to American Airlines to open the selected CMM."
+    @State private var openMatch = false
+
     var body: some View {
-        VStack(spacing: 6) {
-            Text(status).font(.caption).foregroundStyle(.orange)
-            MVDCMMPortalWebView(target: target, onStatus: { status = $0 })
+        VStack(spacing: 8) {
+            Text(status)
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .multilineTextAlignment(.center)
+
+            MVDCMMPortalWebView(
+                target: target,
+                openMatch: openMatch,
+                onStatus: { status = $0 }
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(.blue.opacity(0.55)))
+
+            Button { openMatch = true } label: {
+                Label("OPEN DOCUMENT", systemImage: "doc.text.magnifyingglass")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+
+            Text("Accept Knowledge in the portal first, then press OPEN DOCUMENT to load the trained match link.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
     }
 }
 
 private struct MVDCMMPortalWebView: UIViewRepresentable {
     let target: MVDDocumentTarget
+    let openMatch: Bool
     let onStatus: (String) -> Void
 
     private var configurationJSON: String {
@@ -1881,7 +1906,8 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
             ? "https://aa.flatironscloud.com/pinpoint/#/main/goto?library=c9c65771-2510-4b78-96a3-1791f5bcf558&publicationID=2afe588a-13ca-4d0b-9c94-27b31261e099&documentID=2102982549__B777-200%20IPC%20Addendum&revision=61&documentTitle=B777-200%20IPC%20Addendum.pdf&newViewer=true"
             : ""
         let values: [String: Any] = ["route": route, "preflight": preflight, "page": page,
-                                     "title": publication, "cmm": cmm, "matchURL": original]
+                                     "title": publication, "cmm": cmm, "matchURL": original,
+                                     "allowMatch": openMatch]
         let data = (try? JSONSerialization.data(withJSONObject: values)) ?? Data()
         return String(data: data, encoding: .utf8) ?? "{}"
     }
@@ -1950,7 +1976,8 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
             // Acceptance is the hand-off point. Explicitly load the trained
             // JSON web link after the Knowledge layer disappears; relying on
             // Pinpoint's internal selection can leave the CMM viewer at page 0.
-            if (phase === 'cmm' && !finalNavigationStarted && goal.matchURL) {
+            if (phase === 'cmm' && !finalNavigationStarted && goal.matchURL
+                && (goal.allowMatch || window.__mvdOpenMatch === true)) {
               const cmmShellReady = frames.some(w => {
                 try {
                   const text = normalize((w.document.title || '') + ' '
@@ -1961,9 +1988,14 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
               if (cmmShellReady) {
                 finalNavigationStarted = true;
                 navigate(goal.matchURL);
-                report('Knowledge accepted. Opening the trained match page…');
+                report('Opening the trained match page…');
                 return;
               }
+            }
+            if (phase === 'cmm' && !finalNavigationStarted
+                && window.__mvdOpenMatch !== true && !goal.allowMatch) {
+              report('Knowledge accepted. Press OPEN DOCUMENT to load the trained match link.');
+              return;
             }
             // Pinpoint first renders the IPC Addendum as an HTML shell (welcome/tree/TOC).
             // It is not PDF.js yet, so waiting only for PDFViewerApplication leaves the flow on page 0.
@@ -2035,7 +2067,13 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ view: WKWebView, context: Context) { context.coordinator.onStatus = onStatus }
+    func updateUIView(_ view: WKWebView, context: Context) {
+        context.coordinator.onStatus = onStatus
+        if openMatch && !context.coordinator.matchRequested {
+            context.coordinator.matchRequested = true
+            view.evaluateJavaScript("window.__mvdOpenMatch = true;")
+        }
+    }
 
     static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
         view.stopLoading()
@@ -2046,6 +2084,7 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
         var onStatus: (String) -> Void
+        var matchRequested = false
         init(onStatus: @escaping (String) -> Void) { self.onStatus = onStatus }
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.frameInfo.isMainFrame,
