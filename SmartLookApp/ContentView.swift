@@ -36,8 +36,13 @@ private struct MVDLogo: View {
             if let logoImage {
                 Image(uiImage: logoImage)
                     .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // Keep a square layout contract. Using an unconstrained
+                    // maxHeight here lets the surrounding VStack give the
+                    // image only its first raster rows on iPad, which made
+                    // login and the search header appear vertically cut off.
+                    .aspectRatio(1, contentMode: .fit)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
             } else {
                 Image(systemName: "airplane.circle.fill")
                     .resizable()
@@ -1243,7 +1248,28 @@ struct SearchResult: View {
     }
 
     private func openDocument(_ url: URL, title: String) {
-        documentTarget = MVDDocumentTarget(title: title, url: url, context: documentContext(for: url))
+        documentTarget = MVDDocumentTarget(title: title, url: normalizedDocumentURL(url), context: documentContext(for: url))
+    }
+
+    /// Flatirons CMM links contain a second URL in PDF.js' `file` query
+    /// parameter. The server currently leaves the inner `?versiontype=...`
+    /// unescaped, so PDF.js receives a truncated file URL and remains at 0/0.
+    /// Rebuild the outer URL with the complete inner URL encoded as one value.
+    private func normalizedDocumentURL(_ url: URL) -> URL {
+        guard displayedManual.caseInsensitiveCompare("CMM") == .orderedSame,
+              var outer = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let fileItem = outer.queryItems?.first(where: { $0.name.caseInsensitiveCompare("file") == .orderedSame }),
+              let encodedFile = fileItem.value,
+              let decodedFile = encodedFile.removingPercentEncoding,
+              var inner = URLComponents(string: decodedFile),
+              inner.scheme != nil,
+              inner.host != nil else { return url }
+        outer.queryItems = outer.queryItems?.map { item in
+            item.name.caseInsensitiveCompare("file") == .orderedSame
+                ? URLQueryItem(name: item.name, value: inner.string ?? decodedFile)
+                : item
+        }
+        return outer.url ?? url
     }
 
     @ViewBuilder
@@ -1611,7 +1637,12 @@ private struct MVDDocumentWebView: UIViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
-        webView.load(URLRequest(url: url))
+        var request = URLRequest(url: url)
+        if url.host?.caseInsensitiveCompare("aa.flatironscloud.com") == .orderedSame {
+            request.setValue("https://aa.flatironscloud.com/", forHTTPHeaderField: "Referer")
+            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        }
+        webView.load(request)
         return webView
     }
 
