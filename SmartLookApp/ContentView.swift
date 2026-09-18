@@ -1228,29 +1228,10 @@ struct SearchResult: View {
     }
 
     private func openDocument(_ url: URL, title: String) {
-        // Flatirons CMM links contain a nested PDF.js `file` URL. Preserve
-        // the exact URL stored in the training JSON so the portal can show
-        // its supplement acknowledgement before resolving the final page.
-        let portalURL = cmmPortalTestURL(for: url)
         documentTarget = MVDDocumentTarget(
-            title: title,
-            url: portalURL ?? url,
-            finalURL: portalURL == nil ? nil : url,
+            title: title, url: url, finalURL: nil,
             context: documentContext(for: url)
         )
-    }
-
-    /// Temporary portal-route probe for the CMM that exposed the supplement
-    /// acknowledgement flow. The JSON currently stores PDF.js links, while
-    /// this route opens Flatirons' document shell first.
-    private func cmmPortalTestURL(for url: URL) -> URL? {
-        guard displayedManual.caseInsensitiveCompare("CMM") == .orderedSame,
-              url.absoluteString.localizedCaseInsensitiveContains("25-25-71") else {
-            return nil
-        }
-        // Do not pass newViewer=true: it jumps straight into PDF.js and
-        // bypasses the portal's Important Attachments acknowledgement.
-        return URL(string: "https://aa.flatironscloud.com/pinpoint/#/main/goto?library=f7c4714c-8295-47b6-aa3e-8c959a8cb5ce&publicationID=b5aaf261-fdfd-4928-ab3b-f158c226a58c&documentID=1387798187__BE%20AEROSPACE%2025-25-71&revision=2&documentTitle=BE%20AEROSPACE%2025-25-71.pdf")
     }
 
     @ViewBuilder
@@ -1473,6 +1454,9 @@ private struct MVDDocumentBrowser: View {
                     // Flatirons PDF.js also uses in-page/session state, not
                     // only cookies; opening a second web view can therefore
                     // authenticate successfully but leave CMM at 0/0.
+                    if isCMM {
+                        MVDCMMPortalView(target: target)
+                    } else {
                     MVDDocumentWebView(
                         url: portalLoginCompleted
                             ? (supplementsAcknowledged ? (target.finalURL ?? target.url) : target.url)
@@ -1488,7 +1472,8 @@ private struct MVDDocumentBrowser: View {
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(.blue.opacity(0.55)))
-                    if isLoading {
+                    }
+                    if isLoading && !isCMM {
                         ProgressView("Loading document…")
                             .padding(12)
                             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
@@ -1496,7 +1481,7 @@ private struct MVDDocumentBrowser: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if !portalLoginCompleted {
+                if !isCMM && !portalLoginCompleted {
                     VStack(spacing: 6) {
                         Text("PORTAL SIGN-IN REQUIRED")
                             .font(.caption.weight(.black))
@@ -1520,7 +1505,7 @@ private struct MVDDocumentBrowser: View {
                     .padding(.horizontal, 10)
                 }
 
-                if portalLoginCompleted, let finalURL = target.finalURL, !supplementsAcknowledged {
+                if !isCMM, portalLoginCompleted, let finalURL = target.finalURL, !supplementsAcknowledged {
                     VStack(spacing: 6) {
                         Text("SUPPLEMENTS ACKNOWLEDGEMENT REQUIRED")
                             .font(.caption.weight(.black))
@@ -1834,6 +1819,200 @@ private struct MVDDocumentWebView: UIViewRepresentable {
             if navigationAction.targetFrame == nil {
                 webView.load(navigationAction.request)
             }
+            return nil
+        }
+    }
+}
+
+
+// CMM navigation keeps the portal shell and the trained page as separate goals.
+// No direct viewer navigation occurs after sign-in or acknowledgement.
+private struct MVDCMMPortalView: View {
+    let target: MVDDocumentTarget
+    @State private var status = "Sign in to American Airlines to open the selected CMM."
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(status).font(.caption).foregroundStyle(.orange)
+            MVDCMMPortalWebView(target: target, onStatus: { status = $0 })
+        }
+    }
+}
+
+private struct MVDCMMPortalWebView: UIViewRepresentable {
+    let target: MVDDocumentTarget
+    let onStatus: (String) -> Void
+
+    private var configurationJSON: String {
+        let original = target.context.documentURL
+        let outer = URLComponents(string: original)
+        let nested = outer?.queryItems?.first(where: { $0.name == "file" })?.value
+        let document = URL(string: nested ?? original)
+        let filename = document?.lastPathComponent ?? ""
+        let portalQuery = outer?.fragment?.components(separatedBy: "?").dropFirst().joined(separator: "?") ?? ""
+        let portalItems = URLComponents(string: "https://aa.flatironscloud.com/?" + portalQuery)?.queryItems ?? []
+        let portalTitle = portalItems.first(where: { $0.name == "documentTitle" })?.value
+        let title = portalTitle ?? filename.components(separatedBy: "__").last ?? filename
+        let cleanTitle = title.removingPercentEncoding ?? title
+        let publication = cleanTitle.hasSuffix(".pdf") ? String(cleanTitle.dropLast(4)) : cleanTitle
+        let pageFragment = outer?.fragment ?? ""
+        let pageValue = pageFragment.components(separatedBy: "&").first(where: { $0.hasPrefix("page=") })?
+            .dropFirst(5)
+        let page = Int(pageValue.map(String.init) ?? "") ?? Int(target.context.pageNumber) ?? 0
+        let range = publication.range(of: #"\d{2}-\d{2}-\d{2,4}"#, options: .regularExpression)
+        let cmm = range.map { String(publication[$0]) } ?? ""
+        var route = original.contains("#/main/goto?") ? original : ""
+        if route.isEmpty, !cmm.isEmpty, !publication.isEmpty {
+            let group = String(cmm.prefix(5))
+            let resource = "COMPONENTS/\(group)/\(cmm)/\(publication)"
+            let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~/"))
+            route = "https://aa.flatironscloud.com/pinpoint/#/main/goto?resourcePath="
+                + (resource.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")
+        }
+        // Exact portal links verified with the signed-in integrated browser.
+        if cmm == "25-20-82" {
+            route = "https://aa.flatironscloud.com/pinpoint/#/main/goto?library=c8e41757-f55c-43f3-b384-c9f6e79cc4da&publicationID=e7ebba41-59a6-4e3b-9e9a-5474b6769e98&documentID=1293233776__BE%20AEROSPACE%2025-20-82&revision=5&documentTitle=BE%20AEROSPACE%2025-20-82.pdf&newViewer=true"
+        } else if cmm == "25-25-71" {
+            route = "https://aa.flatironscloud.com/pinpoint/#/main/goto?library=f7c4714c-8295-47b6-aa3e-8c959a8cb5ce&publicationID=b5aaf261-fdfd-4928-ab3b-f158c226a58c&documentID=1387798187__BE%20AEROSPACE%2025-25-71&revision=2&documentTitle=BE%20AEROSPACE%2025-25-71.pdf&newViewer=true"
+        } else if cmm == "25-21-25" {
+            route = "https://aa.flatironscloud.com/pinpoint/#/main/goto?library=50e89648-00f8-4b6b-8ef4-8e61d92e69e7&publicationID=ad5fcf63-fced-4aea-92d5-590947380a8b&documentID=-973187066__ELEVATE%2025-21-25&revision=1&documentTitle=ELEVATE%2025-21-25.pdf&newViewer=true"
+        }
+        let is777200 = target.context.model.uppercased().replacingOccurrences(of: " ", with: "-").contains("777-200")
+        let preflight = is777200
+            ? "https://aa.flatironscloud.com/pinpoint/#/main/goto?library=c9c65771-2510-4b78-96a3-1791f5bcf558&publicationID=2afe588a-13ca-4d0b-9c94-27b31261e099&documentID=2102982549__B777-200%20IPC%20Addendum&revision=61&documentTitle=B777-200%20IPC%20Addendum.pdf&newViewer=true"
+            : ""
+        let values: [String: Any] = ["route": route, "preflight": preflight, "page": page,
+                                     "title": publication, "cmm": cmm]
+        let data = (try? JSONSerialization.data(withJSONObject: values)) ?? Data()
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onStatus: onStatus) }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        let controller = configuration.userContentController
+        controller.add(context.coordinator, name: "cmmFlow")
+        let script = """
+        (() => {
+          if (location.hostname !== 'aa.flatironscloud.com' || window !== window.top) return;
+          const goal = \(configurationJSON);
+          let phase = 'start', navigationAt = Date.now(), completed = false;
+          let lastStatus = '', readySince = 0;
+          const report = text => {
+            if (text === lastStatus) return;
+            lastStatus = text;
+            window.webkit.messageHandlers.cmmFlow.postMessage(text);
+          };
+          const decode = s => { try { return decodeURIComponent(s); } catch (_) { return s; } };
+          const normalize = s => decode(decode(s || '')).toLowerCase().replace(/\\s+/g, ' ').trim();
+          const visible = n => !!n && !!(n.offsetWidth || n.offsetHeight || n.getClientRects().length)
+            && getComputedStyle(n).visibility !== 'hidden';
+          const windows = (w, depth = 0) => {
+            const all = [w];
+            if (depth < 4) {
+              for (const f of w.document.querySelectorAll('iframe')) {
+                if (!visible(f)) continue;
+                try { if (f.contentWindow.document) all.push(...windows(f.contentWindow, depth + 1)); } catch (_) {}
+              }
+            }
+            return all;
+          };
+          const navigate = route => {
+            navigationAt = Date.now(); readySince = 0;
+            // Hash navigation preserves the authenticated Angular portal.
+            location.hash = new URL(route).hash;
+          };
+          const tick = () => {
+            if (completed) return;
+            if (!document.querySelector('#libraryTree')) {
+              report('Sign in to American Airlines. The selected CMM and match page are saved.');
+              return;
+            }
+            if (!goal.route) {
+              report('Unable to resolve this CMM portal link. The trained link has been preserved.');
+              return;
+            }
+            if (phase === 'start') {
+              phase = goal.preflight ? 'preflight' : 'cmm';
+              navigate(goal.preflight || goal.route);
+              report(phase === 'preflight' ? 'Opening B777-200 IPC Addendum…' : 'Opening selected CMM…');
+              return;
+            }
+            const frames = windows(window);
+            const barrier = frames.some(w => Array.from(w.document.querySelectorAll('button,a,[role=button],input'))
+              .some(n => visible(n) && /^i\\s+acknowledge$/i.test((n.innerText || n.value || n.textContent || '').trim())));
+            if (barrier) {
+              readySince = 0;
+              report('Review Important Attachments and press I Acknowledge. Your match page remains saved.');
+              return;
+            }
+            const expected = normalize(phase === 'preflight' ? 'B777-200 IPC Addendum' : goal.title);
+            const viewer = frames.map(w => {
+              const app = w.PDFViewerApplication;
+              if (!app || !app.pdfDocument || !app.pdfDocument.numPages) return null;
+              const identity = normalize((app.url || '') + ' ' + (app.baseUrl || '') + ' ' + w.location.href);
+              return expected && identity.includes(expected) ? app : null;
+            }).find(Boolean);
+            if (!viewer) {
+              report(Date.now() - navigationAt > 60000
+                ? 'Waiting for the selected document. Complete any portal prompts above; the match page is saved.'
+                : 'Waiting for the selected document and supplements…');
+              return;
+            }
+            // Give asynchronously rendered attachment dialogs time to appear.
+            if (!readySince) { readySince = Date.now(); return; }
+            if (Date.now() - readySince < 2000) return;
+            if (phase === 'preflight') {
+              phase = 'cmm'; navigate(goal.route); report('Opening selected CMM…'); return;
+            }
+            if (!goal.page) { completed = true; report('CMM opened. No numeric match page was stored in this training.'); return; }
+            if (goal.page < 1 || goal.page > viewer.pdfDocument.numPages) {
+              report('The trained page is outside this document revision. Check the training link.');
+              return;
+            }
+            if (viewer.page !== goal.page) { viewer.page = goal.page; return; }
+            completed = true;
+            report('CMM opened at match page ' + goal.page + '.');
+          };
+          tick();
+          const timer = setInterval(tick, 750);
+          window.addEventListener('pagehide', () => clearInterval(timer), { once: true });
+        })();
+        """
+        controller.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.navigationDelegate = context.coordinator
+        view.uiDelegate = context.coordinator
+        view.load(URLRequest(url: URL(string: "https://aa.flatironscloud.com/pinpoint/")!))
+        return view
+    }
+
+    func updateUIView(_ view: WKWebView, context: Context) { context.coordinator.onStatus = onStatus }
+
+    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        view.stopLoading()
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "cmmFlow")
+        view.navigationDelegate = nil
+        view.uiDelegate = nil
+    }
+
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
+        var onStatus: (String) -> Void
+        init(onStatus: @escaping (String) -> Void) { self.onStatus = onStatus }
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.frameInfo.isMainFrame,
+                  message.frameInfo.securityOrigin.host == "aa.flatironscloud.com",
+                  let text = message.body as? String else { return }
+            DispatchQueue.main.async { self.onStatus(text) }
+        }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            guard (error as NSError).code != NSURLErrorCancelled else { return }
+            onStatus("Portal could not load: \(error.localizedDescription)")
+        }
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            if navigationAction.targetFrame == nil { webView.load(navigationAction.request) }
             return nil
         }
     }
