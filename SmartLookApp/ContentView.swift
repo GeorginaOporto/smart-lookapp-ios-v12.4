@@ -1966,34 +1966,23 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
               return;
             }
             const frames = windows(window);
+            const manualOpen = goal.allowMatch || window.__mvdOpenMatch === true;
+            // OPEN DOCUMENT is an explicit user command. It must win over
+            // stale/duplicated Knowledge nodes left in an iframe.
+            if (phase === 'cmm' && !finalNavigationStarted && manualOpen && goal.matchURL) {
+              finalNavigationStarted = true;
+              navigate(goal.matchURL);
+              report('Opening the trained match page…');
+              return;
+            }
             const barrier = frames.some(w => Array.from(w.document.querySelectorAll('button,a,[role=button],input'))
               .some(n => visible(n) && /^i\\s+acknowledge$/i.test((n.innerText || n.value || n.textContent || '').trim())));
             if (barrier) {
               readySince = 0;
-              report('Review Important Attachments and press I Acknowledge. Your match page remains saved.');
+              report('Review Important Attachments and press I Acknowledge, then press OPEN DOCUMENT.');
               return;
             }
-            // Acceptance is the hand-off point. Explicitly load the trained
-            // JSON web link after the Knowledge layer disappears; relying on
-            // Pinpoint's internal selection can leave the CMM viewer at page 0.
-            if (phase === 'cmm' && !finalNavigationStarted && goal.matchURL
-                && (goal.allowMatch || window.__mvdOpenMatch === true)) {
-              const cmmShellReady = frames.some(w => {
-                try {
-                  const text = normalize((w.document.title || '') + ' '
-                    + (w.document.body ? w.document.body.innerText || '' : ''));
-                  return text.includes(normalize(goal.cmm)) || text.includes(normalize(goal.title));
-                } catch (_) { return false; }
-              });
-              if (cmmShellReady) {
-                finalNavigationStarted = true;
-                navigate(goal.matchURL);
-                report('Opening the trained match page…');
-                return;
-              }
-            }
-            if (phase === 'cmm' && !finalNavigationStarted
-                && window.__mvdOpenMatch !== true && !goal.allowMatch) {
+            if (phase === 'cmm' && !manualOpen) {
               report('Knowledge accepted. Press OPEN DOCUMENT to load the trained match link.');
               return;
             }
@@ -2069,8 +2058,7 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
 
     func updateUIView(_ view: WKWebView, context: Context) {
         context.coordinator.onStatus = onStatus
-        if openMatch && !context.coordinator.matchRequested {
-            context.coordinator.matchRequested = true
+        if openMatch {
             view.evaluateJavaScript("window.__mvdOpenMatch = true;")
         }
     }
@@ -2084,7 +2072,6 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
         var onStatus: (String) -> Void
-        var matchRequested = false
         init(onStatus: @escaping (String) -> Void) { self.onStatus = onStatus }
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.frameInfo.isMainFrame,
