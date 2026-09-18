@@ -1968,11 +1968,20 @@ private struct MVDCMMPortalWebView: UIViewRepresentable {
               }
             }
             const expected = normalize(phase === 'preflight' ? 'B777-200 IPC Addendum' : goal.title);
+            const portalSnapshot = frames.map(w => {
+              try {
+                return normalize((w.document.title || '') + ' ' + w.location.href + ' '
+                  + (w.document.body ? w.document.body.innerText || '' : ''));
+              } catch (_) { return ''; }
+            }).join(' ');
             const viewer = frames.map(w => {
               const app = w.PDFViewerApplication;
               if (!app || !app.pdfDocument || !app.pdfDocument.numPages) return null;
               const identity = normalize((app.url || '') + ' ' + (app.baseUrl || '') + ' ' + w.location.href);
-              return expected && identity.includes(expected) ? app : null;
+              // Once the CMM route has been opened, the first valid PDF.js
+              // document is the selected CMM. Its internal title can differ
+              // from the trained title, so do not reject it on a strict match.
+              return phase === 'cmm' || (expected && identity.includes(expected)) ? app : null;
             }).find(Boolean);
             if (!viewer) {
               report(Date.now() - navigationAt > 60000
