@@ -1189,6 +1189,7 @@ final class MVDLocalStore: ObservableObject {
     /// The archive is normalized into the requested route so legacy ZIPs cannot
     /// put a shared CMM inside an aircraft model folder.
     func downloadTrainingLibrary(customer: String, manufacturer: String, model: String,
+                                 rebuildIndex: Bool = true,
                                  completion: @escaping (String) -> Void) {
         guard !isPreparing else { completion("TRAINING INDEX BUSY"); return }
         let encodedCustomer = customer.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? customer
@@ -1240,7 +1241,12 @@ final class MVDLocalStore: ObservableObject {
                 )
                 DispatchQueue.main.async {
                     self.hasPreparedPrivateTraining = false
-                    self.loadPrivateTrainingIndex()
+                    // Batch downloads defer indexing until every selected
+                    // archive is installed. Indexing after the first ZIP
+                    // makes the next download see TRAINING INDEX BUSY.
+                    if rebuildIndex {
+                        self.loadPrivateTrainingIndex()
+                    }
                     completion("TRAINING LIBRARY INSTALLED")
                 }
             } catch {
@@ -1287,6 +1293,9 @@ final class MVDLocalStore: ObservableObject {
 
         func downloadNext(_ index: Int) {
             guard index < ordered.count else {
+                // Build one complete index after the fleet and shared CMM
+                // archives have all been installed.
+                self.loadPrivateTrainingIndex()
                 completion("TRAINING LIBRARIES INSTALLED")
                 return
             }
@@ -1301,7 +1310,8 @@ final class MVDLocalStore: ObservableObject {
                 ? (manufacturers.sorted().first ?? parts.manufacturer)
                 : parts.manufacturer
             completion("DOWNLOADING \(option.key) (\(index + 1)/\(ordered.count))…")
-            downloadTrainingLibrary(customer: customer, manufacturer: manufacturer, model: parts.model) { status in
+            downloadTrainingLibrary(customer: customer, manufacturer: manufacturer, model: parts.model,
+                                    rebuildIndex: false) { status in
                 guard status == "TRAINING LIBRARY INSTALLED" else {
                     completion(status)
                     return
