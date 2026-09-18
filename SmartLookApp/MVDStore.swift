@@ -1265,7 +1265,11 @@ final class MVDLocalStore: ObservableObject {
             return parts.manufacturer
         })
         for manufacturer in manufacturers {
-            let cmmKey = "(manufacturer)/CMM"
+            // The shared CMM is stored at the manufacturer level, not under a
+            // model folder. Keep the real manufacturer in the route; using
+            // the old placeholder "(manufacturer)" produced a guaranteed
+            // 404 when the iPad requested the CMM archive.
+            let cmmKey = "\(manufacturer)/CMM"
             if unique[cmmKey] == nil {
                 unique[cmmKey] = MVDLibraryOption(
                     key: cmmKey,
@@ -1291,8 +1295,13 @@ final class MVDLocalStore: ObservableObject {
                 completion("INVALID LIBRARY ROUTE: \(option.key)")
                 return
             }
+            // Be defensive with selections persisted by an older build that
+            // may still contain the placeholder key.
+            let manufacturer = parts.manufacturer == "(manufacturer)"
+                ? (manufacturers.sorted().first ?? parts.manufacturer)
+                : parts.manufacturer
             completion("DOWNLOADING \(option.key) (\(index + 1)/\(ordered.count))…")
-            downloadTrainingLibrary(customer: customer, manufacturer: parts.manufacturer, model: parts.model) { status in
+            downloadTrainingLibrary(customer: customer, manufacturer: manufacturer, model: parts.model) { status in
                 guard status == "TRAINING LIBRARY INSTALLED" else {
                     completion(status)
                     return
@@ -1621,4 +1630,3 @@ private enum MVDLocalEmbedding {
         return dot / (left * right)
     }
 }
-
