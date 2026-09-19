@@ -1228,9 +1228,16 @@ struct SearchResult: View {
     }
 
     private func openDocument(_ url: URL, title: String) {
+        let context = documentContext(for: url)
+        if context.manualType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "CMM" {
+            // CMM opens directly in the device browser. Do not present an
+            // intermediate SmartLookApp screen or a second OPEN DOCUMENT button.
+            UIApplication.shared.open(url, options: [:])
+            return
+        }
         documentTarget = MVDDocumentTarget(
             title: title, url: url, finalURL: nil,
-            context: documentContext(for: url)
+            context: context
         )
     }
 
@@ -1829,53 +1836,15 @@ private struct MVDDocumentWebView: UIViewRepresentable {
 // No direct viewer navigation occurs after sign-in or acknowledgement.
 private struct MVDExternalCMMDocumentView: View {
     let target: MVDDocumentTarget
-    @State private var status = "CMM ready to open in Chrome."
-
-    private func openExternalBrowser() {
-        let documentURL = target.context.documentURL
-        guard let encoded = documentURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let chromeURL = URL(string: "googlechrome://navigate?url=\(encoded)") else {
-            status = "Invalid CMM link."
-            return
-        }
-
-        UIApplication.shared.open(chromeURL, options: [:]) { opened in
-            if !opened, let fallback = URL(string: documentURL) {
-                UIApplication.shared.open(fallback, options: [:])
-                DispatchQueue.main.async {
-                    status = "Chrome is not installed; opened the document in Safari."
-                }
-            } else {
-                DispatchQueue.main.async {
-                    status = "CMM opened in Chrome."
-                }
-            }
-        }
-    }
+    @State private var opened = false
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "arrow.up.right.square.fill")
-                .font(.system(size: 42))
-                .foregroundStyle(.orange)
-            Text("CMM DOCUMENT")
-                .font(.headline.weight(.black))
-            Text("The CMM will open in Chrome outside SmartLookApp.")
-                .font(.caption)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-            Button(action: openExternalBrowser) {
-                Label("OPEN DOCUMENT IN CHROME", systemImage: "globe")
-                    .frame(maxWidth: .infinity)
+        Color.clear
+            .onAppear {
+                guard !opened else { return }
+                opened = true
+                UIApplication.shared.open(target.url, options: [:])
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.orange)
-            Text(status)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .padding(20)
     }
 }
 
