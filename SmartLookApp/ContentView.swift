@@ -1455,7 +1455,7 @@ private struct MVDDocumentBrowser: View {
                     // only cookies; opening a second web view can therefore
                     // authenticate successfully but leave CMM at 0/0.
                     if isCMM {
-                        MVDCMMPortalView(target: target)
+                        MVDExternalCMMDocumentView(target: target)
                     } else {
                     MVDDocumentWebView(
                         url: portalLoginCompleted
@@ -1827,6 +1827,58 @@ private struct MVDDocumentWebView: UIViewRepresentable {
 
 // CMM navigation keeps the portal shell and the trained page as separate goals.
 // No direct viewer navigation occurs after sign-in or acknowledgement.
+private struct MVDExternalCMMDocumentView: View {
+    let target: MVDDocumentTarget
+    @State private var status = "CMM ready to open in Chrome."
+
+    private func openExternalBrowser() {
+        let documentURL = target.context.documentURL
+        guard let encoded = documentURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let chromeURL = URL(string: "googlechrome://navigate?url=\(encoded)") else {
+            status = "Invalid CMM link."
+            return
+        }
+
+        UIApplication.shared.open(chromeURL, options: [:]) { opened in
+            if !opened, let fallback = URL(string: documentURL) {
+                UIApplication.shared.open(fallback, options: [:])
+                DispatchQueue.main.async {
+                    status = "Chrome is not installed; opened the document in Safari."
+                }
+            } else {
+                DispatchQueue.main.async {
+                    status = "CMM opened in Chrome."
+                }
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "arrow.up.right.square.fill")
+                .font(.system(size: 42))
+                .foregroundStyle(.orange)
+            Text("CMM DOCUMENT")
+                .font(.headline.weight(.black))
+            Text("The CMM will open in Chrome outside SmartLookApp.")
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            Button(action: openExternalBrowser) {
+                Label("OPEN DOCUMENT IN CHROME", systemImage: "globe")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+            Text(status)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(20)
+    }
+}
+
 private struct MVDCMMPortalView: View {
     let target: MVDDocumentTarget
     @State private var status = "Sign in to American Airlines to open the selected CMM."
