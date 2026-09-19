@@ -5,10 +5,12 @@ import ZIPFoundation
 
 /// Android v12.2 visual ranking contract. Lower values are better distances.
 enum MVDVisualSearchFormula {
-    static let contextWeight = 0.40
-    static let extractedWeight = 0.60
-    static let legacyWeight = 0.35
-    static let embeddingWeight = 0.65
+    // Keep the complete photograph as the aircraft-area anchor. The extracted
+    // crop refines the part but must not override the context by itself.
+    static let contextWeight = 0.55
+    static let extractedWeight = 0.45
+    static let legacyWeight = 0.45
+    static let embeddingWeight = 0.55
 
     static func combinedVisualDistance(context: Double, extracted: Double) -> Double {
         context * contextWeight + extracted * extractedWeight
@@ -897,23 +899,43 @@ final class MVDLocalStore: ObservableObject {
         let ranked = candidates.compactMap { item -> (Double, MVDTrainingPayload)? in
             let best = item.imageEmbeddings.map { stored -> Double in
                 let contextDistance = (1.0 - MVDOnnxEmbedding.cosine(contextQuery, stored)) * 100.0
+                let extractedDistance = extractedQuery.map {
+                    (1.0 - MVDOnnxEmbedding.cosine($0, stored)) * 100.0
+                }
                 let visualDistance: Double
-                if let extractedQuery {
-                    let extractedDistance = (1.0 - MVDOnnxEmbedding.cosine(extractedQuery, stored)) * 100.0
-                    visualDistance = MVDVisualSearchFormula.combinedVisualDistance(context: contextDistance, extracted: extractedDistance)
+                if let extractedDistance {
+                    visualDistance = MVDVisualSearchFormula.combinedVisualDistance(
+                        context: contextDistance,
+                        extracted: extractedDistance
+                    )
                 } else {
                     visualDistance = contextDistance
                 }
-                // Android's final rank is a weighted legacy visual distance
-                // plus the MobileNet embedding distance. The same stored
-                // 1280-vector is used for both the query and the training ref.
-                let embeddingDistance = (1.0 - MVDOnnxEmbedding.cosine(query, stored)) * 100.0
-                return MVDVisualSearchFormula.finalDistance(visual: visualDistance, embedding: embeddingDistance)
+                // Use the same context/crop combination for both ranking
+                // stages. Letting the crop alone drive the embedding score
+                // caused false positives such as main wheel or landing light.
+                let embeddingDistance = extractedDistance.map {
+                    MVDVisualSearchFormula.combinedVisualDistance(
+                        context: contextDistance,
+                        extracted: $0
+                    )
+                } ?? contextDistance
+                return MVDVisualSearchFormula.finalDistance(
+                    visual: visualDistance,
+                    embedding: embeddingDistance
+                )
             }.min() ?? .infinity
-            guard best.isFinite, best < 60, !sessionNegativeTrainingIDs.contains(item.id) else { return nil }
+            guard best.isFinite, best < 52, !sessionNegativeTrainingIDs.contains(item.id) else { return nil }
             return (best, item)
         }
-        return ranked.sorted { $0.0 < $1.0 }.prefix(10).map(\.1)
+        let ordered = ranked.sorted { $0.0 < $1.0 }
+        guard let winner = ordered.first else { return [] }
+        // A near tie means the visual evidence cannot distinguish two parts.
+        // Do not present a confident but incorrect training result.
+        if ordered.count > 1, ordered[1].0 - winner.0 < 1.5 {
+            return []
+        }
+        return ordered.prefix(10).map(\.1)
     }
 
     func hasTraining(for manual: String, nose: String) -> Bool {
