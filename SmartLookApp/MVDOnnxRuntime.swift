@@ -101,5 +101,6 @@ final class MVDOnnxEmbedding {
             }
         }
 
+        return result
     }
 }
