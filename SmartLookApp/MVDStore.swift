@@ -899,42 +899,23 @@ final class MVDLocalStore: ObservableObject {
         let ranked = candidates.compactMap { item -> (Double, MVDTrainingPayload)? in
             let best = item.imageEmbeddings.map { stored -> Double in
                 let contextDistance = (1.0 - MVDOnnxEmbedding.cosine(contextQuery, stored)) * 100.0
-                let extractedDistance = extractedQuery.map {
-                    (1.0 - MVDOnnxEmbedding.cosine($0, stored)) * 100.0
-                }
                 let visualDistance: Double
-                if let extractedDistance {
-                    visualDistance = MVDVisualSearchFormula.combinedVisualDistance(
-                        context: contextDistance,
-                        extracted: extractedDistance
-                    )
+                if let extractedQuery {
+                    let extractedDistance = (1.0 - MVDOnnxEmbedding.cosine(extractedQuery, stored)) * 100.0
+                    visualDistance = MVDVisualSearchFormula.combinedVisualDistance(context: contextDistance, extracted: extractedDistance)
                 } else {
                     visualDistance = contextDistance
                 }
-                // Use the same context/crop combination for both ranking
-                // stages. Letting the crop alone drive the embedding score
-                // caused false positives such as main wheel or landing light.
-                let embeddingDistance = extractedDistance.map {
-                    MVDVisualSearchFormula.combinedVisualDistance(
-                        context: contextDistance,
-                        extracted: $0
-                    )
-                } ?? contextDistance
-                return MVDVisualSearchFormula.finalDistance(
-                    visual: visualDistance,
-                    embedding: embeddingDistance
-                )
+                // Android's final rank is a weighted legacy visual distance
+                // plus the MobileNet embedding distance. The same stored
+                // 1280-vector is used for both the query and the training ref.
+                let embeddingDistance = (1.0 - MVDOnnxEmbedding.cosine(query, stored)) * 100.0
+                return MVDVisualSearchFormula.finalDistance(visual: visualDistance, embedding: embeddingDistance)
             }.min() ?? .infinity
             guard best.isFinite, best < 60, !sessionNegativeTrainingIDs.contains(item.id) else { return nil }
             return (best, item)
         }
-        // Android returns the ranked candidate list after the scoped search.
-        // Do not discard the whole result set because two valid parts are close;
-        // the previous iOS-only near-tie guard caused false "no result" cases.
-        return ranked
-            .sorted { $0.0 < $1.0 }
-            .prefix(10)
-            .map(\.1)
+        return ranked.sorted { $0.0 < $1.0 }.prefix(10).map(\.1)
     }
 
     func hasTraining(for manual: String, nose: String) -> Bool {
