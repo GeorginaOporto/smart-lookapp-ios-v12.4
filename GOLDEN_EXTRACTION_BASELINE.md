@@ -29,5 +29,44 @@ This baseline records the iOS v12.4 build whose image extraction was validated o
 4. Mask selection remains anchored to the exact prompted pixel.
 5. A second extraction attempt must release the previous inference buffers and must not run MobileSAM and Vision simultaneously after MobileSAM succeeds.
 6. Search-engine, CMM-routing, embeddings, and feedback changes must remain outside this pipeline.
+## Protected functional baseline — build 71
 
+The following components are considered validated and must not be modified without an explicit user instruction naming the component and the requested change:
 
+1. **Image extraction**
+   - Touch coordinate conversion from the visible image to original pixels.
+   - Orientation normalization and preservation.
+   - MobileSAM prompt, mask selection, extraction lifecycle, retry handling, and extracted-piece output.
+   - This entire pipeline remains frozen; search, embeddings, feedback, logos, and browser work must stay outside it.
+
+2. **Application logos and icons**
+   - AppIcon asset catalog and SmartLookAppLogo rendering in the login, header, and search screens.
+   - The validated logo assets must not be replaced, cropped, renamed, or reconnected to another resource without explicit approval.
+
+3. **Training-library download and installation**
+   - Server download route and fallback route.
+   - Sequential installation of all selected libraries followed by one complete index build.
+   - Canonical Documents/TrainingData hierarchy, including shared manufacturer-level CMM.
+   - These changes must not be mixed with search or extraction changes.
+
+4. **Fleet-aware search routing**
+   - Resolution by customer, manufacturer, aircraft model, nose, manual type, ATA folder, and CMM scope.
+   - Correct manual/folder names, including MaintMessage as the canonical maintenance-message folder.
+   - CMM applicability filtering must remain separate from the visual ranking formula.
+
+5. **Persistent learning and embeddings — build 71**
+   - Training-index cache persists in the Documents container across IPA updates.
+   - Existing legacy feedback sidecars are migrated before index restoration.
+   - Positive feedback and positive query embeddings persist with the canonical training library.
+   - Feedback sidecars do not invalidate or force a full training-index rebuild.
+   - The Android-compatible ranking/feedback contract remains the reference; no independent iOS learning algorithm may be introduced without explicit approval.
+
+6. **Current IPA update contract**
+   - The bundle identifier remains com.aeronexares.smartlookapp.mvd so an update can preserve the app container.
+   - Uninstalling the app is not equivalent to updating it: uninstalling removes local libraries and learning data unless they were exported or synchronized first.
+
+## Explicitly not frozen
+
+The following areas remain open for future work and may be changed when requested: CMM browser/knowledge acknowledgement flow, browser navigation, negative-feedback policy, progress/status wording, server synchronization, duplicate GitHub workflows, and release cleanup.
+
+Any future change must preserve the protected baseline above unless the user explicitly authorizes an exception.
