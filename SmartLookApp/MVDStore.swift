@@ -394,7 +394,7 @@ final class MVDLocalStore: ObservableObject {
         let routes: [String: MVDTrainingRoute]
     }
 
-    private static let trainingIndexSchemaVersion = 2
+    private static let trainingIndexSchemaVersion = 3
 
     private var trainingCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -803,10 +803,10 @@ final class MVDLocalStore: ObservableObject {
         }
         var vectors = Array(repeating: [Float](), count: value.imageFiles.count)
         for (index, rawName) in value.imageFiles.enumerated() {
-            if index < value.imageEmbeddings.count, !value.imageEmbeddings[index].isEmpty {
-                vectors[index] = value.imageEmbeddings[index]
-                continue
-            }
+            // Rebuild every stored vector when the embedding contract changes.
+            // JSONs from older libraries may contain vectors made with the
+            // previous RGB preprocessing; reusing them makes every query
+            // incomparable and can repeatedly return the same wrong part.
             let name = rawName.replacingOccurrences(of: "\\", with: "/")
             let candidates = uniqueRoots.map { $0.appendingPathComponent(name) } +
                 uniqueRoots.map { $0.appendingPathComponent(URL(fileURLWithPath: name).lastPathComponent) }
