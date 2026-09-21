@@ -5,12 +5,10 @@ import ZIPFoundation
 
 /// Android v12.2 visual ranking contract. Lower values are better distances.
 enum MVDVisualSearchFormula {
-    // Keep the complete photograph as the aircraft-area anchor. The extracted
-    // crop refines the part but must not override the context by itself.
-    static let contextWeight = 0.55
-    static let extractedWeight = 0.45
-    static let legacyWeight = 0.45
-    static let embeddingWeight = 0.55
+    static let contextWeight = 0.40
+    static let extractedWeight = 0.60
+    static let legacyWeight = 0.35
+    static let embeddingWeight = 0.65
 
     static func combinedVisualDistance(context: Double, extracted: Double) -> Double {
         context * contextWeight + extracted * extractedWeight
