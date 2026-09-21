@@ -27,10 +27,9 @@ private struct MVDLogo: View {
     var body: some View {
         Image("SmartLookAppLogo")
             .resizable()
-            .scaledToFit()
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.18)))
-        .accessibilityLabel("Smart LookApp")
+            .aspectRatio(contentMode: .fit)
+            .interpolation(.high)
+            .accessibilityLabel("Smart LookApp")
     }
 }
 
