@@ -878,6 +878,7 @@ final class MVDLocalStore: ObservableObject {
     /// The context remains mandatory so an extraction can never erase the
     /// positional information from the original photograph.
     func searchByImages(context: UIImage, extracted: UIImage?, manual: String, nose: String, cmmNumber: String = "", includePending: Bool = false) -> [MVDTrainingPayload] {
+        _ = includePending
         guard let contextQuery = MVDOnnxEmbedding.shared.vector(for: context) else { return [] }
         let extractedQuery = extracted.flatMap { MVDOnnxEmbedding.shared.vector(for: $0) }
         let wantedManual = normalizedManual(manual)
@@ -885,35 +886,22 @@ final class MVDLocalStore: ObservableObject {
         let wantedCMM = normalized(cmmNumber)
         let aircraft = aircraftForNose(nose)
         let candidates = training.filter { item in
-            guard includePending || !pendingTrainingIDs.contains(item.id) else { return false }
             let route = routeByTrainingID[item.id]
             return matchesManual(item, route: route, wanted: wantedManual, cmmNumber: wantedCMM) &&
             matchesAircraft(item, route: route, expected: aircraft) &&
             matchesNose(item, route: route, wanted: wantedNose) &&
             (wantedCMM.isEmpty || normalized(item.cmmNumber) == wantedCMM || normalized(item.cmmNumber).isEmpty)
         }
-        let query = extractedQuery ?? contextQuery
-        lastImageQueryEmbedding = query
-        let ranked = candidates.compactMap { item -> (Double, MVDTrainingPayload)? in
-            let best = item.imageEmbeddings.map { stored -> Double in
-                let contextDistance = (1.0 - MVDOnnxEmbedding.cosine(contextQuery, stored)) * 100.0
-                let visualDistance: Double
-                if let extractedQuery {
-                    let extractedDistance = (1.0 - MVDOnnxEmbedding.cosine(extractedQuery, stored)) * 100.0
-                    visualDistance = MVDVisualSearchFormula.combinedVisualDistance(context: contextDistance, extracted: extractedDistance)
-                } else {
-                    visualDistance = contextDistance
-                }
-                // Android's final rank is a weighted legacy visual distance
-                // plus the MobileNet embedding distance. The same stored
-                // 1280-vector is used for both the query and the training ref.
-                let embeddingDistance = (1.0 - MVDOnnxEmbedding.cosine(query, stored)) * 100.0
-                return MVDVisualSearchFormula.finalDistance(visual: visualDistance, embedding: embeddingDistance)
-            }.min() ?? .infinity
-            guard best.isFinite, best < 60, !sessionNegativeTrainingIDs.contains(item.id) else { return nil }
+        return candidates.compactMap { item -> (Double, MVDTrainingPayload)? in
+            let best = item.imageEmbeddings.map { stored in
+                let contextScore = MVDOnnxEmbedding.cosine(contextQuery, stored)
+                guard let extractedQuery else { return contextScore }
+                let extractedScore = MVDOnnxEmbedding.cosine(extractedQuery, stored)
+                return MVDVisualSearchFormula.contextWeight * contextScore + MVDVisualSearchFormula.extractedWeight * extractedScore
+            }.max() ?? 0
+            guard best > 0 else { return nil }
             return (best, item)
-        }
-        return ranked.sorted { $0.0 < $1.0 }.prefix(10).map(\.1)
+        }.sorted { $0.0 > $1.0 }.prefix(10).map(\.1)
     }
 
     func hasTraining(for manual: String, nose: String) -> Bool {
