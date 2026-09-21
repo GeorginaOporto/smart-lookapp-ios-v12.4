@@ -25,8 +25,7 @@ struct MVDSession {
 
 private struct MVDLogo: View {
     private var logoImage: UIImage? {
-        guard let url = Bundle.main.url(forResource: "SmartLookAppLogo-v12.4", withExtension: "png") else { return nil }
-        return UIImage(contentsOfFile: url.path)
+        UIImage(named: "SmartLookAppLogo")
     }
 
     var body: some View {
@@ -46,7 +45,6 @@ private struct MVDLogo: View {
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.18)))
     }
 }
-
 struct ContentView: View {
     @State private var session: MVDSession?
 
