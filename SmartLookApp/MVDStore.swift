@@ -9,6 +9,10 @@ enum MVDVisualSearchFormula {
     static let extractedWeight = 0.60
     static let legacyWeight = 0.35
     static let embeddingWeight = 0.65
+    // Android v12.4: 8 points per positive vote on a 0...100 distance,
+    // represented here as the equivalent 0.08 similarity boost.
+    static let positiveBoostPerVote = 0.08
+    static let positiveBoostCap = 0.40
 
     static func combinedVisualDistance(context: Double, extracted: Double) -> Double {
         context * contextWeight + extracted * extractedWeight
@@ -881,27 +885,63 @@ final class MVDLocalStore: ObservableObject {
         _ = includePending
         guard let contextQuery = MVDOnnxEmbedding.shared.vector(for: context) else { return [] }
         let extractedQuery = extracted.flatMap { MVDOnnxEmbedding.shared.vector(for: $0) }
+        // Android v12.4 learns from the exact bitmap used for the visual
+        // search: the extracted piece when available, otherwise the context.
+        // Keep this vector alive until the feedback button is pressed so a
+        // positive result can be stored as a real field exemplar.
+        lastImageQueryEmbedding = extractedQuery ?? contextQuery
+
         let wantedManual = normalizedManual(manual)
         let wantedNose = normalized(nose)
         let wantedCMM = normalized(cmmNumber)
         let aircraft = aircraftForNose(nose)
         let candidates = training.filter { item in
+            guard !sessionNegativeTrainingIDs.contains(item.id) else { return false }
             let route = routeByTrainingID[item.id]
             return matchesManual(item, route: route, wanted: wantedManual, cmmNumber: wantedCMM) &&
             matchesAircraft(item, route: route, expected: aircraft) &&
             matchesNose(item, route: route, wanted: wantedNose) &&
             (wantedCMM.isEmpty || normalized(item.cmmNumber) == wantedCMM || normalized(item.cmmNumber).isEmpty)
         }
+
         return candidates.compactMap { item -> (Double, MVDTrainingPayload)? in
-            let best = item.imageEmbeddings.map { stored in
+            let route = routeByTrainingID[item.id]
+            let feedback = loadAndroidFeedback(for: route)
+            let learnedQuery = extractedQuery ?? contextQuery
+
+            // Original Android-compatible visual score: context plus the
+            // extracted piece, with the same 40/60 weighting.
+            var best = item.imageEmbeddings.map { stored in
                 let contextScore = MVDOnnxEmbedding.cosine(contextQuery, stored)
                 guard let extractedQuery else { return contextScore }
                 let extractedScore = MVDOnnxEmbedding.cosine(extractedQuery, stored)
-                return MVDVisualSearchFormula.contextWeight * contextScore + MVDVisualSearchFormula.extractedWeight * extractedScore
+                return MVDVisualSearchFormula.contextWeight * contextScore +
+                    MVDVisualSearchFormula.extractedWeight * extractedScore
             }.max() ?? 0
+
+            // Android's positive exemplars are a second, pure embedding
+            // signal. They compete directly with the original reference
+            // images and can therefore correct a recurring wrong first match.
+            for exemplar in feedback.exemplars where exemplar.count == learnedQuery.count {
+                best = max(best, MVDOnnxEmbedding.cosine(learnedQuery, exemplar))
+            }
+
             guard best > 0 else { return nil }
-            return (best, item)
-        }.sorted { $0.0 > $1.0 }.prefix(10).map(\.1)
+
+            // Android stores the score as a distance and subtracts
+            // POSITIVE_BOOST_PER_VOTE (8/100) per confirmed thumbs-up. In
+            // this similarity representation the equivalent is addition.
+            // Do not clamp the result to 1.0: Android deliberately preserves
+            // the difference between candidates instead of creating ties.
+            let positiveBoost = min(
+                MVDVisualSearchFormula.positiveBoostCap,
+                Double(feedback.votes) * MVDVisualSearchFormula.positiveBoostPerVote
+            )
+            return (best + positiveBoost, item)
+        }
+        .sorted { $0.0 > $1.0 }
+        .prefix(10)
+        .map(\.1)
     }
 
     func hasTraining(for manual: String, nose: String) -> Bool {
@@ -1090,6 +1130,42 @@ final class MVDLocalStore: ObservableObject {
     private func routeMatchesATA(_ route: MVDTrainingRoute?, wanted: String?) -> Bool {
         guard let wanted, !wanted.isEmpty else { return true }
         return route?.ataFolder.caseInsensitiveCompare(wanted) == .orderedSame
+    }
+
+    private struct AndroidFeedbackSnapshot {
+        let votes: Int
+        let exemplars: [[Float]]
+    }
+
+    /// Reads the same local learning files used by Android v12.4.
+    /// Positive feedback is persistent; negative feedback remains session-only.
+    private func loadAndroidFeedback(for route: MVDTrainingRoute?) -> AndroidFeedbackSnapshot {
+        guard let route, !route.sourceFileName.isEmpty else {
+            return AndroidFeedbackSnapshot(votes: 0, exemplars: [])
+        }
+
+        let folder = trainingFolder(for: route)
+        let feedbackURL = folder.appendingPathComponent("_feedback.json")
+        var votes = 0
+        if let data = try? Data(contentsOf: feedbackURL),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            votes = (object[route.sourceFileName] as? NSNumber)?.intValue ?? 0
+        }
+
+        let exemplarURL = folder.appendingPathComponent("_positive_embeddings.jsonl")
+        guard let text = try? String(contentsOf: exemplarURL, encoding: .utf8) else {
+            return AndroidFeedbackSnapshot(votes: votes, exemplars: [])
+        }
+
+        var exemplars: [[Float]] = []
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  (object["fileName"] as? String) == route.sourceFileName,
+                  let values = object["embedding"] as? [NSNumber] else { continue }
+            exemplars.append(values.map(\.floatValue))
+        }
+        return AndroidFeedbackSnapshot(votes: votes, exemplars: exemplars)
     }
 
     func registerSearchFeedback(for payload: MVDTrainingPayload, positive: Bool) {
