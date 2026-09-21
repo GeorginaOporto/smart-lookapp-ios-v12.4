@@ -25,10 +25,8 @@ struct MVDSession {
 
 private struct MVDLogo: View {
     private var logoImage: UIImage? {
-        // Login and the header must use the same catalogued asset as the app
-        // icon family. The old loose PNG resource is malformed on the Xcode
-        // build runner and can make UIImage(contentsOfFile:) return nil.
-        UIImage(named: "SmartLookAppLogo", in: Bundle.main, compatibleWith: nil)
+        guard let url = Bundle.main.url(forResource: "SmartLookAppLogo-v12.4", withExtension: "png") else { return nil }
+        return UIImage(contentsOfFile: url.path)
     }
 
     var body: some View {
@@ -37,7 +35,6 @@ private struct MVDLogo: View {
                 Image(uiImage: logoImage)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Image(systemName: "airplane.circle.fill")
                     .resizable()
@@ -45,7 +42,8 @@ private struct MVDLogo: View {
                     .foregroundStyle(.blue)
             }
         }
-        .accessibilityLabel("Smart LookApp")
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.18)))
     }
 }
 
