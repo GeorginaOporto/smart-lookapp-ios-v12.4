@@ -18,7 +18,7 @@
 <string>1</string>
 	<key>CFBundleIconFiles</key>
 	<array>
-		<string>AppIcon</string>
+		<string>SmartLookAppLogo-v12.4</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>SmartLookApp uses the camera to stage training photos locally on this iPad.</string>
