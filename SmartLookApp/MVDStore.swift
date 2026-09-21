@@ -925,17 +925,16 @@ final class MVDLocalStore: ObservableObject {
                     embedding: embeddingDistance
                 )
             }.min() ?? .infinity
-            guard best.isFinite, best < 52, !sessionNegativeTrainingIDs.contains(item.id) else { return nil }
+            guard best.isFinite, best < 60, !sessionNegativeTrainingIDs.contains(item.id) else { return nil }
             return (best, item)
         }
-        let ordered = ranked.sorted { $0.0 < $1.0 }
-        guard let winner = ordered.first else { return [] }
-        // A near tie means the visual evidence cannot distinguish two parts.
-        // Do not present a confident but incorrect training result.
-        if ordered.count > 1, ordered[1].0 - winner.0 < 1.5 {
-            return []
-        }
-        return ordered.prefix(10).map(\.1)
+        // Android returns the ranked candidate list after the scoped search.
+        // Do not discard the whole result set because two valid parts are close;
+        // the previous iOS-only near-tie guard caused false "no result" cases.
+        return ranked
+            .sorted { $0.0 < $1.0 }
+            .prefix(10)
+            .map(\.1)
     }
 
     func hasTraining(for manual: String, nose: String) -> Bool {
