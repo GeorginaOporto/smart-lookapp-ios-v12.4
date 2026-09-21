@@ -369,6 +369,9 @@ final class MVDLocalStore: ObservableObject {
         isPreparing = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
+            // One-time migration of learning sidecars created by older builds.
+            // It runs before cache restoration and is skipped thereafter.
+            self.migrateLegacyLearningFilesIfNeeded()
             if importArchives {
                 MVDPrivateArchiveImporter.importPendingCMMArchives()
             }
@@ -396,19 +399,44 @@ final class MVDLocalStore: ObservableObject {
         let routes: [String: MVDTrainingRoute]
     }
 
-    private static let trainingIndexSchemaVersion = 2
+    // Version 3 moves the index cache out of Application Support so an IPA
+    // update keeps it together with the user's Documents/TrainingData.
+    private static let trainingIndexSchemaVersion = 3
 
     private var trainingCacheURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(".smartlookapp", isDirectory: true)
+            .appendingPathComponent("smartlookapp-training-index-cache.json")
+    }
+
+    private var legacyTrainingCacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("smartlookapp-training-index-cache.json")
     }
 
+    private var learningMigrationMarkerURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(".smartlookapp", isDirectory: true)
+            .appendingPathComponent("learning-migration-v1.done")
+    }
+
+    /// The downloaded libraries and their learning sidecars share one stable
+    /// root in Documents. Updating the IPA does not replace this directory.
+    private var canonicalTrainingRoot: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("TrainingData", isDirectory: true)
+    }
+
     private func loadCachedTrainingIndex() -> (training: [MVDTrainingPayload], routes: [String: MVDTrainingRoute])? {
-        guard let data = try? Data(contentsOf: trainingCacheURL),
-              let cache = try? JSONDecoder().decode(TrainingIndexCache.self, from: data),
-              cache.schemaVersion == Self.trainingIndexSchemaVersion,
-              cache.signature == trainingSourceSignature() else { return nil }
-        return (cache.training, cache.routes)
+        let candidates = [trainingCacheURL, legacyTrainingCacheURL]
+        for candidate in candidates {
+            guard let data = try? Data(contentsOf: candidate),
+                  let cache = try? JSONDecoder().decode(TrainingIndexCache.self, from: data),
+                  cache.schemaVersion == Self.trainingIndexSchemaVersion,
+                  cache.signature == trainingSourceSignature() else { continue }
+            return (cache.training, cache.routes)
+        }
+        return nil
     }
 
     private func applyTrainingSnapshot(_ snapshot: (training: [MVDTrainingPayload], routes: [String: MVDTrainingRoute])) {
@@ -452,6 +480,11 @@ final class MVDLocalStore: ObservableObject {
                 let pendingArchive = url.pathExtension.caseInsensitiveCompare("zip") == .orderedSame
                     && url.lastPathComponent.localizedCaseInsensitiveContains("cmm")
                 guard inTrainingTree || pendingArchive else { continue }
+                // Feedback sidecars are learned data, not library source files.
+                // Changing a thumbs-up must not force a full index rebuild.
+                let sidecarName = url.lastPathComponent.lowercased()
+                guard sidecarName != "_feedback.json",
+                      sidecarName != "_positive_embeddings.jsonl" else { continue }
                 let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
                 let size = values?.fileSize ?? 0
                 let modified = values?.contentModificationDate?.timeIntervalSince1970 ?? 0
@@ -1132,40 +1165,113 @@ final class MVDLocalStore: ObservableObject {
         return route?.ataFolder.caseInsensitiveCompare(wanted) == .orderedSame
     }
 
+    /// Migrates learning sidecars from the old Application Support roots
+    /// into Documents/TrainingData. The migration is idempotent and preserves
+    /// both vote counts and positive embedding exemplars.
+    private func migrateLegacyLearningFilesIfNeeded() {
+        let fileManager = FileManager.default
+        guard !fileManager.fileExists(atPath: learningMigrationMarkerURL.path) else { return }
+        try? fileManager.createDirectory(at: canonicalTrainingRoot, withIntermediateDirectories: true)
+
+        for root in privateTrainingRoots() {
+            let rootPath = root.standardizedFileURL.path
+            guard let enumerator = fileManager.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey]
+            ) else { continue }
+
+            for case let sourceURL as URL in enumerator {
+                let fileName = sourceURL.lastPathComponent.lowercased()
+                guard fileName == "_feedback.json" || fileName == "_positive_embeddings.jsonl" else { continue }
+                let sourcePath = sourceURL.standardizedFileURL.path
+                guard sourcePath.hasPrefix(rootPath + "/") else { continue }
+                let relative = String(sourcePath.dropFirst(rootPath.count + 1))
+                let destinationURL = canonicalTrainingRoot.appendingPathComponent(relative)
+                if destinationURL.standardizedFileURL.path == sourcePath { continue }
+                try? fileManager.createDirectory(
+                    at: destinationURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+
+                if fileName == "_feedback.json" {
+                    var merged: [String: Int] = [:]
+                    if let existing = try? Data(contentsOf: destinationURL),
+                       let values = try? JSONDecoder().decode([String: Int].self, from: existing) {
+                        merged = values
+                    }
+                    if let source = try? Data(contentsOf: sourceURL),
+                       let values = try? JSONDecoder().decode([String: Int].self, from: source) {
+                        for (key, value) in values {
+                            merged[key] = max(merged[key] ?? 0, value)
+                        }
+                    }
+                    if let data = try? JSONEncoder().encode(merged) {
+                        try? data.write(to: destinationURL, options: .atomic)
+                    }
+                } else {
+                    var lines = Set<String>()
+                    if let existing = try? String(contentsOf: destinationURL, encoding: .utf8) {
+                        lines.formUnion(existing.split(whereSeparator: \.isNewline).map(String.init))
+                    }
+                    if let source = try? String(contentsOf: sourceURL, encoding: .utf8) {
+                        lines.formUnion(source.split(whereSeparator: \.isNewline).map(String.init))
+                    }
+                    let merged = lines.sorted().joined(separator: "\n")
+                    try? Data((merged + (merged.isEmpty ? "" : "\n")).utf8)
+                        .write(to: destinationURL, options: .atomic)
+                }
+            }
+        }
+
+        try? fileManager.createDirectory(
+            at: learningMigrationMarkerURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? Data("v1\n".utf8).write(to: learningMigrationMarkerURL, options: .atomic)
+    }
+
     private struct AndroidFeedbackSnapshot {
         let votes: Int
         let exemplars: [[Float]]
     }
 
-    /// Reads the same local learning files used by Android v12.4.
-    /// Positive feedback is persistent; negative feedback remains session-only.
+    /// Reads the Android-compatible sidecars from the stable Documents root
+    /// and also from the legacy root for backward compatibility.
     private func loadAndroidFeedback(for route: MVDTrainingRoute?) -> AndroidFeedbackSnapshot {
         guard let route, !route.sourceFileName.isEmpty else {
             return AndroidFeedbackSnapshot(votes: 0, exemplars: [])
         }
 
-        let folder = trainingFolder(for: route)
-        let feedbackURL = folder.appendingPathComponent("_feedback.json")
-        var votes = 0
-        if let data = try? Data(contentsOf: feedbackURL),
-           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            votes = (object[route.sourceFileName] as? NSNumber)?.intValue ?? 0
-        }
-
-        let exemplarURL = folder.appendingPathComponent("_positive_embeddings.jsonl")
-        guard let text = try? String(contentsOf: exemplarURL, encoding: .utf8) else {
-            return AndroidFeedbackSnapshot(votes: votes, exemplars: [])
-        }
-
+        var counts: [String: Int] = [:]
+        var exemplarLines = Set<String>()
         var exemplars: [[Float]] = []
-        for line in text.split(whereSeparator: \.isNewline) {
-            guard let data = line.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  (object["fileName"] as? String) == route.sourceFileName,
-                  let values = object["embedding"] as? [NSNumber] else { continue }
-            exemplars.append(values.map(\.floatValue))
+
+        for folder in feedbackFolders(for: route) {
+            let feedbackURL = folder.appendingPathComponent("_feedback.json")
+            if let data = try? Data(contentsOf: feedbackURL),
+               let values = try? JSONDecoder().decode([String: Int].self, from: data) {
+                for (key, value) in values {
+                    counts[key] = max(counts[key] ?? 0, value)
+                }
+            }
+
+            let exemplarURL = folder.appendingPathComponent("_positive_embeddings.jsonl")
+            guard let text = try? String(contentsOf: exemplarURL, encoding: .utf8) else { continue }
+            for line in text.split(whereSeparator: \.isNewline) {
+                let rawLine = String(line)
+                guard exemplarLines.insert(rawLine).inserted,
+                      let data = rawLine.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      (object["fileName"] as? String) == route.sourceFileName,
+                      let values = object["embedding"] as? [NSNumber] else { continue }
+                exemplars.append(values.map(\.floatValue))
+            }
         }
-        return AndroidFeedbackSnapshot(votes: votes, exemplars: exemplars)
+
+        return AndroidFeedbackSnapshot(
+            votes: counts[route.sourceFileName] ?? 0,
+            exemplars: exemplars
+        )
     }
 
     func registerSearchFeedback(for payload: MVDTrainingPayload, positive: Bool) {
@@ -1187,26 +1293,71 @@ final class MVDLocalStore: ObservableObject {
 
     private func persistAndroidPositiveFeedback(for payload: MVDTrainingPayload, embedding: [Float]) {
         guard let route = routeByTrainingID[payload.id], !route.sourceFileName.isEmpty else { return }
-        let manualFolder = trainingFolder(for: route)
-        try? FileManager.default.createDirectory(at: manualFolder, withIntermediateDirectories: true)
-        let feedbackURL = manualFolder.appendingPathComponent("_feedback.json")
-        var counts = (try? JSONDecoder().decode([String: Int].self, from: Data(contentsOf: feedbackURL))) ?? [:]
+        let canonicalFolder = canonicalTrainingFolder(for: route)
+        try? FileManager.default.createDirectory(at: canonicalFolder, withIntermediateDirectories: true)
+
+        var counts: [String: Int] = [:]
+        for folder in feedbackFolders(for: route) {
+            let feedbackURL = folder.appendingPathComponent("_feedback.json")
+            guard let data = try? Data(contentsOf: feedbackURL),
+                  let values = try? JSONDecoder().decode([String: Int].self, from: data) else { continue }
+            for (key, value) in values {
+                counts[key] = max(counts[key] ?? 0, value)
+            }
+        }
         counts[route.sourceFileName, default: 0] += 1
-        if let data = try? JSONEncoder().encode(counts) { try? data.write(to: feedbackURL, options: .atomic) }
+        let feedbackURL = canonicalFolder.appendingPathComponent("_feedback.json")
+        if let data = try? JSONEncoder().encode(counts) {
+            try? data.write(to: feedbackURL, options: .atomic)
+        }
+
         guard !embedding.isEmpty else { return }
         let record: [String: Any] = ["fileName": route.sourceFileName, "embedding": embedding]
         guard let data = try? JSONSerialization.data(withJSONObject: record) else { return }
-        let logURL = manualFolder.appendingPathComponent("_positive_embeddings.jsonl")
+        let logURL = canonicalFolder.appendingPathComponent("_positive_embeddings.jsonl")
         if let handle = try? FileHandle(forWritingTo: logURL) {
-            handle.seekToEndOfFile(); handle.write(data); handle.write(Data([10])); try? handle.close()
-        } else { try? (data + Data([10])).write(to: logURL, options: .atomic) }
+            handle.seekToEndOfFile()
+            handle.write(data)
+            handle.write(Data([10]))
+            try? handle.close()
+        } else {
+            try? (data + Data([10])).write(to: logURL, options: .atomic)
+        }
     }
 
-    private func trainingFolder(for route: MVDTrainingRoute) -> URL {
-        let root = privateTrainingRoots().first ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("TrainingData")
-        var result = root.appendingPathComponent(route.customer).appendingPathComponent(route.manufacturer).appendingPathComponent(route.model)
+    private func feedbackFolders(for route: MVDTrainingRoute) -> [URL] {
+        let canonical = canonicalTrainingFolder(for: route)
+        let legacy = legacyTrainingFolder(for: route)
+        if canonical.standardizedFileURL.path == legacy.standardizedFileURL.path {
+            return [canonical]
+        }
+        return [canonical, legacy]
+    }
+
+    private func canonicalTrainingFolder(for route: MVDTrainingRoute) -> URL {
+        var result = canonicalTrainingRoot
+            .appendingPathComponent(route.customer)
+            .appendingPathComponent(route.manufacturer)
+            .appendingPathComponent(route.model)
         if normalizedManual(route.manual) == "CMM" {
-            return root.appendingPathComponent(route.customer)
+            return canonicalTrainingRoot
+                .appendingPathComponent(route.customer)
+                .appendingPathComponent(route.manufacturer)
+                .appendingPathComponent("CMM")
+                .appendingPathComponent("cmm\(route.cmmNumber)")
+        }
+        return result.appendingPathComponent(route.manual)
+    }
+
+    private func legacyTrainingFolder(for route: MVDTrainingRoute) -> URL {
+        let root = privateTrainingRoots().first ?? canonicalTrainingRoot
+        var result = root
+            .appendingPathComponent(route.customer)
+            .appendingPathComponent(route.manufacturer)
+            .appendingPathComponent(route.model)
+        if normalizedManual(route.manual) == "CMM" {
+            return root
+                .appendingPathComponent(route.customer)
                 .appendingPathComponent(route.manufacturer)
                 .appendingPathComponent("CMM")
                 .appendingPathComponent("cmm\(route.cmmNumber)")
