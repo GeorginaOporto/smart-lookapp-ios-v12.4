@@ -83,16 +83,23 @@ final class MVDOnnxEmbedding {
               let data = context.data else { return nil }
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: 224, height: 224))
         let pixels = data.bindMemory(to: UInt8.self, capacity: 224 * 224 * 4)
+        // Match the MobileNet preprocessing used by the Android v12.4
+        // search engine: RGB in [0, 1], then ImageNet channel normalization.
+        let mean: [Float] = [0.485, 0.456, 0.406]
+        let standardDeviation: [Float] = [0.229, 0.224, 0.225]
         var result = Array(repeating: Float(0), count: 3 * 224 * 224)
         for y in 0..<224 {
             for x in 0..<224 {
                 let pixel = (y * 224 + x) * 4
                 let index = y * 224 + x
-                result[index] = Float(pixels[pixel]) / 255
-                result[224 * 224 + index] = Float(pixels[pixel + 1]) / 255
-                result[2 * 224 * 224 + index] = Float(pixels[pixel + 2]) / 255
+                let red = Float(pixels[pixel]) / 255.0
+                let green = Float(pixels[pixel + 1]) / 255.0
+                let blue = Float(pixels[pixel + 2]) / 255.0
+                result[index] = (red - mean[0]) / standardDeviation[0]
+                result[224 * 224 + index] = (green - mean[1]) / standardDeviation[1]
+                result[2 * 224 * 224 + index] = (blue - mean[2]) / standardDeviation[2]
             }
         }
-        return result
+
     }
 }
