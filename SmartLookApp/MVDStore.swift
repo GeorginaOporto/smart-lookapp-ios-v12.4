@@ -290,6 +290,8 @@ final class MVDLocalStore: ObservableObject {
         guard !hasPreparedPrivateTraining, !isPreparing else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
+            // Migrate legacy sidecars before restoring the persistent index.
+            self.migrateLegacyLearningFilesIfNeeded()
             if let snapshot = self.loadCachedTrainingIndex() {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
