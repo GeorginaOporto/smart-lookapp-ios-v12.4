@@ -409,6 +409,8 @@ struct SearchView: View {
     @State private var results: [MVDTrainingPayload] = []
     @State private var resultIndex = 0
     @State private var searchStatus = ""
+    @State private var isSearching = false
+    @State private var searchGeneration = 0
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var sourceImage: UIImage?
     @State private var extractedImage: UIImage?
@@ -608,6 +610,7 @@ struct SearchView: View {
                     .tint(.orange)
                 }
                 Button {
+                    guard !isSearching else { return }
                     guard let aircraft = session.aircraft else {
                         searchStatus = "NO FLEET SELECTED"
                         resultShown = true
@@ -619,24 +622,121 @@ struct SearchView: View {
                         showLibraryDownload = true
                         return
                     }
-                    let hasTextQuery = !eicas.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !fim.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !maint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    if !hasTextQuery, let context = sourceImage {
-                        results = store.searchByImages(context: context, extracted: extractedImage, manual: manual, nose: session.nose, cmmNumber: selectedCMM, includePending: session.role.uppercased() == "TRAINER")
-                    } else {
-                        results = store.search(eicas: eicas, fim: fim, maint: maint, manual: manual, nose: session.nose, cmmNumber: selectedCMM, includePending: session.role.uppercased() == "TRAINER")
-                    }
-                    resultIndex = 0
-                    searchStatus = results.isEmpty
-                        ? (store.hasMatchOutsideManual(eicas: eicas, fim: fim, maint: maint, manual: manual, nose: session.nose, cmmNumber: selectedCMM)
-                            ? "NOT FOUND IN \(manual)"
-                            : (store.hasTrainingForSearch(eicas: eicas, fim: fim, maint: maint, manual: manual, nose: session.nose, cmmNumber: selectedCMM) ? "NO RESULTS FOUND" : "FOLDER NOT FOUND"))
-                        : "MATCH FOUND"
+
+                    let hasTextQuery = !eicas.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        !fim.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        !maint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    let context = sourceImage
+                    let extracted = extractedImage
+                    let searchManual = manual
+                    let searchNose = session.nose
+                    let searchCMM = selectedCMM
+                    let includePending = session.role.uppercased() == "TRAINER"
+                    let searchEicas = eicas
+                    let searchFim = fim
+                    let searchMaint = maint
+                    let generation = searchGeneration
+
+                    // Run embeddings/index traversal off the main thread so the
+                    // progress indicator remains visible during the search.
+                    isSearching = true
                     resultShown = true
-                } label: { Label("SEARCH", systemImage: "magnifyingglass").frame(maxWidth: .infinity) }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                    .disabled(store.isPreparing || (eicas.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && fim.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && maint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && sourceImage == nil) || (manual == "CMM" && selectedCMM.isEmpty))
+                    results = []
+                    resultIndex = 0
+                    searchStatus = "SEARCHING…"
+
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let found: [MVDTrainingPayload]
+                        if !hasTextQuery, let context {
+                            found = store.searchByImages(
+                                context: context,
+                                extracted: extracted,
+                                manual: searchManual,
+                                nose: searchNose,
+                                cmmNumber: searchCMM,
+                                includePending: includePending
+                            )
+                        } else {
+                            found = store.search(
+                                eicas: searchEicas,
+                                fim: searchFim,
+                                maint: searchMaint,
+                                manual: searchManual,
+                                nose: searchNose,
+                                cmmNumber: searchCMM,
+                                includePending: includePending
+                            )
+                        }
+                        let outsideManual = store.hasMatchOutsideManual(
+                            eicas: searchEicas,
+                            fim: searchFim,
+                            maint: searchMaint,
+                            manual: searchManual,
+                            nose: searchNose,
+                            cmmNumber: searchCMM
+                        )
+                        let hasTraining = store.hasTrainingForSearch(
+                            eicas: searchEicas,
+                            fim: searchFim,
+                            maint: searchMaint,
+                            manual: searchManual,
+                            nose: searchNose,
+                            cmmNumber: searchCMM
+                        )
+
+                        DispatchQueue.main.async {
+                            guard generation == searchGeneration else { return }
+                            results = found
+                            resultIndex = 0
+                            if found.isEmpty {
+                                searchStatus = outsideManual
+                                    ? "NOT FOUND IN \(searchManual)"
+                                    : (hasTraining ? "NO RESULTS FOUND" : "FOLDER NOT FOUND")
+                            } else {
+                                searchStatus = "MATCH FOUND"
+                            }
+                            isSearching = false
+                        }
+                    }
+                } label: {
+                    if isSearching {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("SEARCHING…")
+                        }
+                        .frame(maxWidth: .infinity)
+                    } else {
+                        Label("SEARCH", systemImage: "magnifyingglass")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(isSearching || store.isPreparing ||
+                    (eicas.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                     fim.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                     maint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                     sourceImage == nil) ||
+                    (manual == "CMM" && selectedCMM.isEmpty))
+                if isSearching {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ProgressView().progressViewStyle(.linear)
+                        Label("SEARCH IN PROGRESS — WAIT FOR RESULTS", systemImage: "hourglass")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.yellow)
+                    }
+                    .padding(.vertical, 4)
+                }
                 if resultShown {
-                    if results.indices.contains(resultIndex) {
+                    if isSearching {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ProgressView().progressViewStyle(.linear)
+                            Text("SEARCHING… THE RESULT WILL APPEAR HERE")
+                                .font(.headline)
+                                .foregroundStyle(.yellow)
+                        }
+                        .card()
+                    } else if results.indices.contains(resultIndex) {
                         SearchResult(
                             session: session,
                             payload: results[resultIndex],
@@ -708,13 +808,19 @@ struct SearchView: View {
             Task {
                 if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
                     let oriented = image.normalizedForVision()
-                    await MainActor.run { sourceImage = oriented; extractedImage = nil; imageStatus = "Full image loaded locally" }
+                    await MainActor.run {
+                         resetSearchResultsPreservingImages()
+                         sourceImage = oriented
+                         extractedImage = nil
+                         imageStatus = "Full image loaded locally"
+                     }
                 }
             }
         }
         .sheet(isPresented: $showCamera) {
             CameraPicker { image in
                 if let image {
+                    resetSearchResultsPreservingImages()
                     sourceImage = image.normalizedForVision()
                     extractedImage = nil
                     imageStatus = "Camera image loaded locally"
@@ -724,6 +830,7 @@ struct SearchView: View {
         }
         .sheet(isPresented: $showAppLibrary) {
             AppLibraryPicker { image, name in
+                resetSearchResultsPreservingImages()
                 sourceImage = image.normalizedForVision()
                 extractedImage = nil
                 imageStatus = "App image loaded locally: \(name)"
@@ -738,6 +845,10 @@ struct SearchView: View {
                 VisionExtractionView(
                     image: image.normalizedForVision().downsampled(maxDimension: 1024)
                 ) { cropped in
+                    // A new extraction is a new query. Keep the original
+                    // context image, but never reuse the previous result list
+                    // or its feedback/result index.
+                    resetSearchResultsPreservingImages()
                     extractedImage = cropped
                     imageStatus = "Piece extracted locally; SEARCH is ready"
                     showExtractor = false
@@ -754,8 +865,20 @@ struct SearchView: View {
         }
     }
 
-    private func clearSearch() {
+    /// Clears only the previous search state. The original context image
+    /// remains available when the technician selects a new extracted piece.
+    private func resetSearchResultsPreservingImages() {
         store.resetSearchSessionFeedback()
+        results = []
+        resultIndex = 0
+        resultShown = false
+        searchStatus = ""
+        isSearching = false
+        searchGeneration += 1
+    }
+
+    private func clearSearch() {
+        resetSearchResultsPreservingImages()
         eicas = ""
         fim = ""
         maint = ""
